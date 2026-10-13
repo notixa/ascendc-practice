@@ -1,0 +1,39 @@
+CompileFlags:
+  Add:
+    # 语言标准
+    - -std=c++17
+    # Ascend C CPU 仿真与语法补全定义（防止 NPU 关键字报错）
+    - -D__CCE_KT_TEST__
+    - -D__CCE_AICORE__=220
+    # 消除 NPU 专属关键字在普通 clangd 下的未知类型报错
+    - -D__global__=
+    - -D__aicore__=
+    - -D__vector__=
+    - -D__gm__=
+    # 注入本地 IDE 专用的 Ascend C 声明桩，消除 AscendC::printf 等红线报错
+    - -include/home/notixa/codes/ascendc/.clangd_stub.h
+    # CANN Toolkit Ascend C 核心头文件路径
+    - -I/home/notixa/Ascend/ascend-toolkit/latest/x86_64-linux/tikcpp/tikcfw
+    - -I/home/notixa/Ascend/ascend-toolkit/latest/x86_64-linux/tikcpp/tikcfw/interface
+    - -I/home/notixa/Ascend/ascend-toolkit/latest/x86_64-linux/tikcpp/tikcfw/inner_interface
+    - -I/home/notixa/Ascend/ascend-toolkit/latest/x86_64-linux/tikcpp/tikcfw/impl
+    - -I/home/notixa/Ascend/ascend-toolkit/latest/x86_64-linux/tikcpp/tikcfw/kernel_tiling
+    - -I/home/notixa/Ascend/ascend-toolkit/latest/tools/tikicpulib/lib/include
+    - -I/home/notixa/Ascend/ascend-toolkit/latest/x86_64-linux/include
+    - -I/home/notixa/Ascend/ascend-toolkit/latest/include
+    # Python 3.10 头文件路径 (用于 torch/extension.h 内部依赖的 Python.h)
+    - -I/home/notixa/.local/share/uv/python/cpython-3.10.20-linux-x86_64-gnu/include/python3.10
+    # PyTorch 与 PyTorch-NPU C++ 头文件路径
+    - -I/home/notixa/codes/ascendc/.venv/lib/python3.10/site-packages/torch/include
+    - -I/home/notixa/codes/ascendc/.venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include
+    - -I/home/notixa/codes/ascendc/.venv/lib/python3.10/site-packages/torch_npu/include
+    - -I/home/notixa/codes/ascendc/.venv/lib/python3.10/site-packages/torch_npu/include/third_party/acl/inc
+    # 自定义算子 csrc 头文件路径
+    - -I/home/notixa/codes/ascendc/rmsnorm_npu/csrc
+
+Diagnostics:
+  Suppress:
+    - -Wc++11-narrowing
+    - -Wunused-variable
+    - -Wunused-but-set-variable
+

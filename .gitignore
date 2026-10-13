@@ -1,0 +1,64 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C / C++ / Ascend C compiled binaries, objects & libraries
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.bin
+*.elf
+
+# Ascend C / CMake build directories and auto-generated files
+build/
+build_out/
+auto_gen/
+*_merge_obj_dir/
+single_objects/
+*.run
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Python packaging & distribution
+dist/
+eggs/
+*.egg-info/
+*.egg
+develop-eggs/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE / Editor / Tool configurations and caches
+.cache/
+.vscode/
+.idea/
+.zed/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Ascend / NPU profiling, dumps, core files, and logs
+plog/
+dump/
+kernel_meta/
+core
+core.*
+*.log
+prof_result/
+PROF_*/
+mindstudio_profiler_*
+*.db
+*.db-*
