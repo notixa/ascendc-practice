@@ -37,6 +37,7 @@ include(${ASCENDC_CMAKE_DIR}/ascendc.cmake)
 ascendc_library(flash_attention_kernel STATIC
     csrc/flash_attention_fwd_kernel.cpp
     csrc/flash_attention_bwd_dkdv_kernel.cpp
+    csrc/flash_attention_bwd_dq_kernel.cpp
 )
 
 target_include_directories(flash_attention_kernel_interface INTERFACE
