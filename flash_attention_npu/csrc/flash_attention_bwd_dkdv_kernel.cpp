@@ -52,7 +52,7 @@ private:
   __aicore__ inline void CopyInAndInit(uint32_t batch);
   __aicore__ inline void InnerCycle(uint32_t i);
   __aicore__ inline void InnerCycle_CopyIn(uint32_t i);
-  __aicore__ __attribute__((noinline)) void InnerCycle_Compute(uint32_t i);
+  __aicore__ inline void InnerCycle_Compute(uint32_t i);
 
 private:
   TPipe pipe_;
@@ -211,7 +211,7 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_CopyIn(uint32_t i) {
   dQue_.EnQue(dLocal);
 }
 
-__aicore__ __attribute__((noinline)) void
+__aicore__ inline void
 FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i) {
   LocalTensor<half> qLocal = qQue_.DeQue<half>();
   LocalTensor<half> doLocal = doQue_.DeQue<half>();

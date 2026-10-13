@@ -7,6 +7,7 @@ endif()
 
 # Target Atlas 200I DK A2 SoC version
 set(SOC_VERSION "Ascend310B1" CACHE STRING "system on chip type")
+set(ASCEND_KERNEL_LAUNCH_ONLY ON CACHE BOOL "Only build kernel launch" FORCE)
 
 # Locate CANN Toolkit
 if(DEFINED ASCEND_CANN_PACKAGE_PATH)

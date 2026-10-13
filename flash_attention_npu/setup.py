@@ -1,4 +1,5 @@
 import os
+os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 import sys
 import subprocess
 from pathlib import Path
@@ -45,6 +46,7 @@ def build_kernel_with_cmake():
         "-DCMAKE_BUILD_TYPE=Release",
         f"-DSOC_VERSION={SOC_VERSION}",
         f"-DASCEND_CANN_PACKAGE_PATH={ASCEND_TOOLKIT_PATH}",
+        "-DASCEND_KERNEL_LAUNCH_ONLY=ON",
     ]
     build_cmd = ["cmake", "--build", str(BUILD_DIR), "-j4"]
 
@@ -70,12 +72,16 @@ include_dirs = [
 ]
 
 cann_lib64 = os.path.join(ASCEND_TOOLKIT_PATH, "lib64")
+cann_stub64 = os.path.join(ASCEND_TOOLKIT_PATH, "runtime", "lib64", "stub")
 library_dirs = [cann_lib64]
+extra_link_args = [f"-Wl,-rpath,{cann_lib64}"]
+if os.path.isdir(cann_stub64):
+    library_dirs.append(cann_stub64)
+    extra_link_args.append(f"-Wl,-rpath,{cann_stub64}")
 libraries = [
     "ascendcl",
     "runtime",
 ]
-extra_link_args = [f"-Wl,-rpath,{cann_lib64}"]
 
 try:
     import torch_npu

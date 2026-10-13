@@ -6,8 +6,7 @@
 #if defined(__CCE_AICORE__) || defined(__CCE_KT_TEST__)
 #include "kernel_tiling/kernel_tiling.h"
 #else
-#include <algorithm>
-#include <cmath>
+#include <math.h>
 
 #ifndef __TIKCFW_KERNEL_TILING_H_
 #define __TIKCFW_KERNEL_TILING_H_
@@ -101,4 +100,106 @@ struct FlashAttentionBwd_dQ_TilingData {
 };
 #pragma pack(pop)
 
+#if !defined(__CCE_AICORE__)
+inline uint32_t AlignUpBwd(uint32_t val, uint32_t alignment) {
+  return ((val + alignment - 1) / alignment) * alignment;
+}
+
+inline void InitMatmulTCubeTilingBwd(TCubeTiling &t, int32_t M, int32_t N, int32_t Ka, int32_t Kb) {
+  t.M = M;
+  t.N = N;
+  t.Ka = Ka;
+  t.Kb = Kb;
+  t.singleCoreM = M;
+  t.singleCoreN = N;
+  t.singleCoreK = Ka;
+  t.baseM = M;
+  t.baseN = N;
+  t.baseK = (Ka < 64) ? AlignUpBwd(Ka, 16) : 64;
+  t.stepM = 1;
+  t.stepN = 1;
+  t.stepKa = 1;
+  t.stepKb = 1;
+  t.depthA1 = 1;
+  t.depthB1 = 1;
+  t.isBias = 0;
+  t.iterateOrder = 0;
+  t.usedCoreNum = 1;
+}
+
+inline void ComputeFlashAttentionBwd_dKdV_Tiling(
+    uint32_t N_q, uint32_t N_k, uint32_t d, uint32_t targetCoreNum,
+    FlashAttentionBwd_dKdV_TilingData &tilingData, float customScale = 0.0f) {
+  tilingData.N_q = N_q;
+  tilingData.N_k = N_k;
+  tilingData.d = d;
+
+  uint32_t B_q = 64;
+  uint32_t B_k = 64;
+  if (N_q < 64) {
+    B_q = AlignUpBwd(N_q, 16);
+  }
+  if (N_k < 64) {
+    B_k = AlignUpBwd(N_k, 16);
+  }
+  tilingData.B_q = B_q;
+  tilingData.B_k = B_k;
+
+  if (customScale > 0.0f) {
+    tilingData.scale = customScale;
+  } else {
+    tilingData.scale = 1.0f / sqrtf(static_cast<float>(d));
+  }
+
+  uint32_t T_k = (N_k + B_k - 1) / B_k;
+  uint32_t actualCoreNum = (targetCoreNum < T_k) ? targetCoreNum : T_k;
+  if (actualCoreNum == 0) actualCoreNum = 1;
+
+  tilingData.coreNum = actualCoreNum;
+  tilingData.largeCoreNum = T_k % actualCoreNum;
+
+  InitMatmulTCubeTilingBwd(tilingData.cubeTilingQK, B_q, B_k, d, d);
+  InitMatmulTCubeTilingBwd(tilingData.cubeTilingPdO, B_k, d, B_q, B_q);
+  InitMatmulTCubeTilingBwd(tilingData.cubeTilingdOV, B_q, B_k, d, d);
+  InitMatmulTCubeTilingBwd(tilingData.cubeTilingdSQ, B_k, d, B_q, B_q);
+}
+
+inline void ComputeFlashAttentionBwd_dQ_Tiling(
+    uint32_t N_q, uint32_t N_k, uint32_t d, uint32_t targetCoreNum,
+    FlashAttentionBwd_dQ_TilingData &tilingData, float customScale = 0.0f) {
+  tilingData.N_q = N_q;
+  tilingData.N_k = N_k;
+  tilingData.d = d;
+
+  uint32_t B_q = 64;
+  uint32_t B_k = 64;
+  if (N_q < 64) {
+    B_q = AlignUpBwd(N_q, 16);
+  }
+  if (N_k < 64) {
+    B_k = AlignUpBwd(N_k, 16);
+  }
+  tilingData.B_q = B_q;
+  tilingData.B_k = B_k;
+
+  if (customScale > 0.0f) {
+    tilingData.scale = customScale;
+  } else {
+    tilingData.scale = 1.0f / sqrtf(static_cast<float>(d));
+  }
+
+  uint32_t T_q = (N_q + B_q - 1) / B_q;
+  uint32_t actualCoreNum = (targetCoreNum < T_q) ? targetCoreNum : T_q;
+  if (actualCoreNum == 0) actualCoreNum = 1;
+
+  tilingData.coreNum = actualCoreNum;
+  tilingData.largeCoreNum = T_q % actualCoreNum;
+
+  InitMatmulTCubeTilingBwd(tilingData.cubeTilingQK, B_q, B_k, d, d);
+  InitMatmulTCubeTilingBwd(tilingData.cubeTilingdOV, B_q, B_k, d, d);
+  InitMatmulTCubeTilingBwd(tilingData.cubeTilingdSK, B_q, d, B_k, B_k);
+}
 #endif
+
+#endif
+

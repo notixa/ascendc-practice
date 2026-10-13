@@ -6,8 +6,7 @@
 #if defined(__CCE_AICORE__) || defined(__CCE_KT_TEST__)
 #include "kernel_tiling/kernel_tiling.h"
 #else
-#include <algorithm>
-#include <cmath>
+#include <math.h>
 
 #ifndef __TIKCFW_KERNEL_TILING_H_
 #define __TIKCFW_KERNEL_TILING_H_
@@ -112,11 +111,11 @@ inline void ComputeFlashAttentionFwdTiling(
   if (customScale > 0.0f) {
     tilingData.scale = customScale;
   } else {
-    tilingData.scale = 1.0f / std::sqrt(static_cast<float>(d));
+    tilingData.scale = 1.0f / sqrtf(static_cast<float>(d));
   }
 
   uint32_t T_q = (N_q + B_q - 1) / B_q;
-  uint32_t actualCoreNum = std::min(targetCoreNum, T_q);
+  uint32_t actualCoreNum = (targetCoreNum < T_q) ? targetCoreNum : T_q;
   if (actualCoreNum == 0)
     actualCoreNum = 1;
 
