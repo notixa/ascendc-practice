@@ -159,6 +159,7 @@ __aicore__ inline void FlashAttentionFwdKernel::Process() {
 __aicore__ inline void
 FlashAttentionFwdKernel::InnerCycle(int32_t j, uint32_t batch,
                                     uint64_t batchOffset) {
+  PRINTF("[FWD] InnerCycle start: j=%d, batch=%d\n", j, batch);
   uint64_t offsetQ = (batchOffset + batch) * tilingData_.B_q * tilingData_.d;
   uint64_t offsetK = j * tilingData_.B_k * tilingData_.d;
   uint64_t offsetV = offsetK;
@@ -168,11 +169,14 @@ FlashAttentionFwdKernel::InnerCycle(int32_t j, uint32_t batch,
   LocalTensor<half> sLocal = sQue_.AllocTensor<half>();
   mmQK_.IterateAll(sLocal);
   sQue_.EnQue(sLocal);
+  PRINTF("[FWD] mmQK completed\n");
 
   Compute(offsetV);
+  PRINTF("[FWD] Compute completed\n");
 }
 
 __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
+  PRINTF("[FWD] Compute: DeQue sLocal\n");
   LocalTensor<half> sLocal = sQue_.DeQue<half>();
   LocalTensor<half> pLocal = pQue_.AllocTensor<half>();
   LocalTensor<half> rowMaxLocal = rowMaxBuf_.Get<half>();
@@ -205,9 +209,12 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
   pQue_.EnQue(pLocal);
   LocalTensor<half> pMatmul = pQue_.DeQue<half>();
 
+  PRINTF("[FWD] Starting mmPV\n");
+  LocalTensor<half> pvRes = pvResBuf_.Get<half>();
   mmPV_.SetTensorA(pMatmul);
   mmPV_.SetTensorB(vGm_[offsetV], false);
-  mmPV_.Iterate();
+  mmPV_.IterateAll(pvRes);
+  PRINTF("[FWD] mmPV completed\n");
 
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
     ReduceSum(scalarLocal, pMatmul[i * tilingData_.B_k], reduceLocal,
@@ -225,8 +232,6 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
     Muls(o[i * tilingData_.d], o[i * tilingData_.d], scl, tilingData_.d);
   }
 
-  LocalTensor<half> pvRes = pvResBuf_.Get<half>();
-  mmPV_.GetTensorC(pvRes);
   Add(o, o, pvRes, tilingData_.B_q * tilingData_.d);
   pQue_.FreeTensor(pMatmul);
 }
@@ -234,6 +239,9 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
 extern "C" __global__ __aicore__ void
 flash_attention_fwd_kernel(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR o,
                            GM_ADDR l, GM_ADDR tiling) {
+  if ASCEND_IS_AIV {
+    return;
+  }
   FlashAttentionFwdKernel op;
   op.Init(q, k, v, o, l, tiling);
   op.Process();

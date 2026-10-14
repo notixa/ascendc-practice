@@ -256,6 +256,9 @@ extern "C" __global__ __aicore__ void
 flash_attention_bwd_dq_kernel(GM_ADDR q, GM_ADDR o, GM_ADDR do_grad, GM_ADDR k,
                               GM_ADDR v, GM_ADDR l, GM_ADDR d, GM_ADDR dq,
                               GM_ADDR tiling) {
+  if ASCEND_IS_AIV {
+    return;
+  }
   FlashAttentionBwd_dQ_Kernel op;
   op.Init(q, o, do_grad, k, v, l, d, dq, tiling);
   op.Process();
