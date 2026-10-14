@@ -176,7 +176,6 @@ FlashAttentionFwdKernel::InnerCycle(int32_t j, uint32_t batch,
   InnerCycle_CopyIn(offsetKV);
 
   LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
-  mmQK_.SetLocalWorkspace(mmWs);
   mmQK_.SetTensorA(qGm_[offsetQ], false);
   LocalTensor<half> kMatmul = kQue_.DeQue<half>();
   mmQK_.SetTensorB(kMatmul, true);
@@ -230,7 +229,6 @@ FlashAttentionFwdKernel::Compute(LocalTensor<half> &kLocal) {
 
   LocalTensor<half> pvRes = pvResBuf_.Get<half>();
   LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
-  mmPV_.SetLocalWorkspace(mmWs);
   mmPV_.SetTensorA(sLocal);
   LocalTensor<half> vLocal = vQue_.DeQue<half>();
   mmPV_.SetTensorB(vLocal, false);
