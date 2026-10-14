@@ -164,7 +164,8 @@ __aicore__ inline void FlashAttentionBwd_dKdV_Kernel::Process() {
   uint32_t T_q = (tilingData_.N_q + tilingData_.B_q - 1) / tilingData_.B_q;
   for (uint32_t batch = 0; batch < batchNum_; ++batch) {
     CopyInAndInit(batch);
-    uint64_t offsetKV = (batchOffset_ + batch) * tilingData_.d * tilingData_.B_k;
+    uint64_t offsetKV =
+        (batchOffset_ + batch) * tilingData_.d * tilingData_.B_k;
     for (uint32_t i = 0; i < T_q; ++i) {
       InnerCycle(i, offsetKV);
     }
@@ -210,7 +211,8 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_CopyIn(uint32_t i) {
 }
 
 __aicore__ inline void
-FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetKV) {
+FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
+                                                  uint64_t offsetKV) {
   LocalTensor<half> dkLocal = dkBuf_.Get<half>();
   LocalTensor<half> dvLocal = dvBuf_.Get<half>();
   LocalTensor<half> dpLocal = dpBuf_.Get<half>();
@@ -256,6 +258,8 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetKV)
   }
   dQue_.FreeTensor(dLocal);
   Mul(dpLocal, sLocal, dpLocal, tilingData_.B_q * tilingData_.B_k);
+  Muls(dpLocal, dpLocal, static_cast<half>(tilingData_.scale),
+       tilingData_.d * tilingData_.B_k);
 
   mmdSQ_.SetTensorA(dpLocal, true);
   mmdSQ_.SetTensorB(qLocal, false);
@@ -266,8 +270,6 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetKV)
   Add(dvLocal, dvLocal, tmpMmRes, tilingData_.d * tilingData_.B_k);
 
   mmdSQ_.GetTensorC(tmpMmRes);
-  Muls(tmpMmRes, tmpMmRes, static_cast<half>(tilingData_.scale),
-       tilingData_.d * tilingData_.B_k);
   Add(dkLocal, dkLocal, tmpMmRes, tilingData_.d * tilingData_.B_k);
   qQue_.FreeTensor(qLocal);
 }

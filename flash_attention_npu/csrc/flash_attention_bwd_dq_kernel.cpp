@@ -29,7 +29,8 @@ class FlashAttentionBwd_dQ_Kernel {
   using A_TYPE_dOV = MatmulType<TPosition::GM, CubeFormat::ND, half, false>;
   using B_TYPE_dOV = MatmulType<TPosition::VECIN, CubeFormat::ND, half, true>;
   using C_TYPE_dOV = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
-  using A_TYPE_dSK = MatmulType<TPosition::VECCALC, CubeFormat::ND, half, false>;
+  using A_TYPE_dSK =
+      MatmulType<TPosition::VECCALC, CubeFormat::ND, half, false>;
   using B_TYPE_dSK = MatmulType<TPosition::VECIN, CubeFormat::ND, half, false>;
   using C_TYPE_dSK = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
 
@@ -196,7 +197,6 @@ FlashAttentionBwd_dQ_Kernel::InnerCycle_CopyIn(uint32_t i) {
 
 __aicore__ inline void
 FlashAttentionBwd_dQ_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetQ) {
-  LocalTensor<half> vLocal = vQue_.DeQue<half>();
   LocalTensor<half> lLocal = lBuf_.Get<half>();
   LocalTensor<half> dLocal = dBuf_.Get<half>();
   LocalTensor<half> dqLocal = dqBuf_.Get<half>();
@@ -210,6 +210,7 @@ FlashAttentionBwd_dQ_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetQ) {
   mmQK_.Iterate();
 
   mmdOV_.SetTensorA(doGm_[offsetQ], false);
+  LocalTensor<half> vLocal = vQue_.DeQue<half>();
   mmdOV_.SetTensorB(vLocal, true);
 
   mmQK_.GetTensorC(sLocal);
