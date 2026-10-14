@@ -2,6 +2,7 @@
 #include "kernel_operator.h"
 #include "flash_attention_fwd_tiling.h"
 #include "lib/matmul_intf.h"
+#include <cstdint>
 // clang-format on
 
 using namespace AscendC;
@@ -23,10 +24,10 @@ __aicore__ inline void LoadTilingFromGM(GM_ADDR tilingGM, HeaderT &dstStack) {
 
 class FlashAttentionFwdKernel {
   using A_TYPE_QK = MatmulType<TPosition::GM, CubeFormat::ND, half, false>;
-  using B_TYPE_QK = MatmulType<TPosition::GM, CubeFormat::ND, half, true>;
+  using B_TYPE_QK = MatmulType<TPosition::VECCALC, CubeFormat::ND, half, true>;
   using C_TYPE_QK = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
-  using A_TYPE_PV = MatmulType<TPosition::VECOUT, CubeFormat::ND, half, false>;
-  using B_TYPE_PV = MatmulType<TPosition::GM, CubeFormat::ND, half, false>;
+  using A_TYPE_PV = MatmulType<TPosition::VECCALC, CubeFormat::ND, half, false>;
+  using B_TYPE_PV = MatmulType<TPosition::VECCALC, CubeFormat::ND, half, false>;
   using C_TYPE_PV = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
 
 public:
@@ -42,7 +43,8 @@ public:
 private:
   __aicore__ inline void InnerCycle(int32_t j, uint32_t batch,
                                     uint64_t batchOffset);
-  __aicore__ inline void Compute(uint64_t offsetV);
+  __aicore__ inline void InnerCycle_CopyIn(uint64_t offset);
+  __aicore__ inline void Compute(LocalTensor<half> &kLocal);
 
 private:
   TPipe pipe_;
@@ -55,8 +57,9 @@ private:
   GlobalTensor<half> vGm_;
   GlobalTensor<half> oGm_;
   GlobalTensor<half> lGm_;
-  TQue<TPosition::VECIN, FLASH_QUEUE_DEPTH> sQue_;
-  TQue<TPosition::VECOUT, FLASH_QUEUE_DEPTH> pQue_;
+  TQue<TPosition::VECIN, FLASH_QUEUE_DEPTH> kQue_;
+  TQue<TPosition::VECIN, FLASH_QUEUE_DEPTH> vQue_;
+  TBuf<TPosition::VECCALC> sBuf_;
   TBuf<TPosition::VECCALC> L;
   TBuf<TPosition::VECCALC> O;
   TBuf<TPosition::VECCALC> mBuf_;
@@ -102,10 +105,11 @@ __aicore__ inline void FlashAttentionFwdKernel::Init(GM_ADDR Q, GM_ADDR K,
                        tilingData_.N_q * tilingData_.d);
   lGm_.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(L), tilingData_.N_q);
 
-  pipe_.InitBuffer(sQue_, FLASH_BUFFER_SIZE,
-                   tilingData_.B_q * tilingData_.B_k * sizeof(half));
-  pipe_.InitBuffer(pQue_, FLASH_BUFFER_SIZE,
-                   tilingData_.B_k * tilingData_.B_q * sizeof(half));
+  pipe_.InitBuffer(kQue_, FLASH_BUFFER_SIZE,
+                   tilingData_.B_k * tilingData_.d * sizeof(half));
+  pipe_.InitBuffer(vQue_, FLASH_BUFFER_SIZE,
+                   tilingData_.B_k * tilingData_.d * sizeof(half));
+  pipe_.InitBuffer(sBuf_, tilingData_.B_q * tilingData_.B_k * sizeof(half));
   pipe_.InitBuffer(this->L, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(this->O, tilingData_.B_q * tilingData_.d * sizeof(half));
   pipe_.InitBuffer(mBuf_, tilingData_.B_q * sizeof(half));
@@ -167,25 +171,33 @@ __aicore__ inline void
 FlashAttentionFwdKernel::InnerCycle(int32_t j, uint32_t batch,
                                     uint64_t batchOffset) {
   uint64_t offsetQ = (batchOffset + batch) * tilingData_.B_q * tilingData_.d;
-  uint64_t offsetK = j * tilingData_.B_k * tilingData_.d;
-  uint64_t offsetV = offsetK;
+  uint64_t offsetKV = j * tilingData_.B_k * tilingData_.d;
+
+  InnerCycle_CopyIn(offsetKV);
 
   LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
   mmQK_.SetLocalWorkspace(mmWs);
   mmQK_.SetTensorA(qGm_[offsetQ], false);
-  mmQK_.SetTensorB(kGm_[offsetK], true);
+  LocalTensor<half> kMatmul = kQue_.DeQue<half>();
+  mmQK_.SetTensorB(kMatmul, true);
+  mmQK_.Iterate();
 
-  LocalTensor<half> sLocal = sQue_.AllocTensor<half>();
-  mmQK_.IterateAll(sLocal);
-  sQue_.EnQue(sLocal);
-
-  Compute(offsetV);
+  Compute(kMatmul);
 }
 
-__aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
-  PRINTF("[FWD] Compute: DeQue sLocal\n");
-  LocalTensor<half> sLocal = sQue_.DeQue<half>();
-  LocalTensor<half> pLocal = pQue_.AllocTensor<half>();
+__aicore__ inline void
+FlashAttentionFwdKernel::InnerCycle_CopyIn(uint64_t offset) {
+  LocalTensor<half> kLocal = kQue_.AllocTensor<half>();
+  LocalTensor<half> vLocal = vQue_.AllocTensor<half>();
+  DataCopy(kLocal, kGm_[offset], tilingData_.B_k * tilingData_.d);
+  DataCopy(vLocal, vGm_[offset], tilingData_.B_k * tilingData_.d);
+  kQue_.EnQue(kLocal);
+  vQue_.EnQue(vLocal);
+}
+
+__aicore__ inline void
+FlashAttentionFwdKernel::Compute(LocalTensor<half> &kLocal) {
+  LocalTensor<half> sLocal = sBuf_.Get<half>();
   LocalTensor<half> rowMaxLocal = rowMaxBuf_.Get<half>();
   LocalTensor<half> reduceLocal = reduceBuf_.Get<half>();
   LocalTensor<half> mLocal = mBuf_.Get<half>();
@@ -193,6 +205,9 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
   LocalTensor<half> sumLocal = rowSumBuf_.Get<half>();
   LocalTensor<half> scaleLocal = scaleBuf_.Get<half>();
   LocalTensor<half> scalarLocal = scalarBuf_.Get<half>();
+
+  mmQK_.GetTensorC(sLocal);
+  kQue_.FreeTensor(kLocal);
 
   half scale = tilingData_.scale;
   Muls(sLocal, sLocal, scale, tilingData_.B_q * tilingData_.B_k);
@@ -210,23 +225,19 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
     Adds(sLocal[i * tilingData_.B_k], sLocal[i * tilingData_.B_k],
          static_cast<half>(-static_cast<float>(m)), tilingData_.B_k);
   }
-  Exp(pLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
-  sQue_.FreeTensor(sLocal);
+  // P in-place reuses sLocal
+  Exp(sLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
 
-  pQue_.EnQue(pLocal);
-  LocalTensor<half> pMatmul = pQue_.DeQue<half>();
-
-  PRINTF("[FWD] Starting mmPV\n");
   LocalTensor<half> pvRes = pvResBuf_.Get<half>();
   LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
   mmPV_.SetLocalWorkspace(mmWs);
-  mmPV_.SetTensorA(pMatmul);
-  mmPV_.SetTensorB(vGm_[offsetV], false);
-  mmPV_.IterateAll(pvRes);
-  PRINTF("[FWD] mmPV completed\n");
+  mmPV_.SetTensorA(sLocal);
+  LocalTensor<half> vLocal = vQue_.DeQue<half>();
+  mmPV_.SetTensorB(vLocal, false);
+  mmPV_.Iterate();
 
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
-    ReduceSum(scalarLocal, pMatmul[i * tilingData_.B_k], reduceLocal,
+    ReduceSum(scalarLocal, sLocal[i * tilingData_.B_k], reduceLocal,
               tilingData_.B_k);
     sumLocal.SetValue(i, scalarLocal.GetValue(0));
   }
@@ -240,9 +251,9 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
     half scl = scaleLocal.GetValue(i);
     Muls(o[i * tilingData_.d], o[i * tilingData_.d], scl, tilingData_.d);
   }
-
+  mmPV_.GetTensorC(pvRes);
+  vQue_.FreeTensor(vLocal);
   Add(o, o, pvRes, tilingData_.B_q * tilingData_.d);
-  pQue_.FreeTensor(pMatmul);
 }
 
 extern "C" __global__ __aicore__ void
