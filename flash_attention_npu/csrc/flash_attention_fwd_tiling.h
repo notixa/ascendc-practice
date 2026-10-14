@@ -40,6 +40,8 @@ struct TCubeTiling {
   int32_t singleBatchN = 0;
   int32_t stepKa = 1;
   int32_t stepKb = 1;
+  int32_t depthAL1CacheUB = 0;
+  int32_t depthBL1CacheUB = 0;
   int32_t dbL0A = 0;
   int32_t dbL0B = 0;
   int32_t dbL0C = 0;
@@ -64,6 +66,8 @@ struct TCubeTiling {
 #pragma pack(pop)
 #endif // __TIKCFW_KERNEL_TILING_H_
 #endif // defined(__CCE_AICORE__) || defined(__CCE_KT_TEST__)
+
+static_assert(sizeof(TCubeTiling) == 200, "TCubeTiling must be exactly 200 bytes!");
 
 #pragma pack(push, 8)
 struct FlashAttentionFwdTilingData {

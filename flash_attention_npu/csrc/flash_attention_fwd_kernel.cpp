@@ -24,10 +24,10 @@ __aicore__ inline void LoadTilingFromGM(GM_ADDR tilingGM, HeaderT &dstStack) {
 class FlashAttentionFwdKernel {
   using A_TYPE_QK = MatmulType<TPosition::GM, CubeFormat::ND, half, false>;
   using B_TYPE_QK = MatmulType<TPosition::GM, CubeFormat::ND, half, true>;
-  using C_TYPE_QK = MatmulType<TPosition::VECIN, CubeFormat::ND, half>;
+  using C_TYPE_QK = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
   using A_TYPE_PV = MatmulType<TPosition::VECOUT, CubeFormat::ND, half, false>;
   using B_TYPE_PV = MatmulType<TPosition::GM, CubeFormat::ND, half, false>;
-  using C_TYPE_PV = MatmulType<TPosition::VECIN, CubeFormat::ND, half>;
+  using C_TYPE_PV = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
 
 public:
   __aicore__ inline FlashAttentionFwdKernel() {}
@@ -67,6 +67,7 @@ private:
   TBuf<TPosition::VECCALC> reduceBuf_;
   TBuf<TPosition::VECCALC> pvResBuf_;
   TBuf<TPosition::VECCALC> scalarBuf_;
+  TBuf<TPosition::VECCALC> mmWorkspaceBuf_;
   Matmul<A_TYPE_QK, B_TYPE_QK, C_TYPE_QK> mmQK_;
   Matmul<A_TYPE_PV, B_TYPE_PV, C_TYPE_PV> mmPV_;
 };
@@ -115,6 +116,7 @@ __aicore__ inline void FlashAttentionFwdKernel::Init(GM_ADDR Q, GM_ADDR K,
   pipe_.InitBuffer(reduceBuf_, 4096);
   pipe_.InitBuffer(pvResBuf_, tilingData_.B_q * tilingData_.d * sizeof(half));
   pipe_.InitBuffer(scalarBuf_, 32);
+  pipe_.InitBuffer(mmWorkspaceBuf_, 16384);
 
   mmQK_.Init(&tilingData_.cubeTilingQK, &pipe_);
   mmQK_.SetOrgShape(tilingData_.cubeTilingQK.M, tilingData_.cubeTilingQK.N,
@@ -123,6 +125,10 @@ __aicore__ inline void FlashAttentionFwdKernel::Init(GM_ADDR Q, GM_ADDR K,
   mmPV_.Init(&tilingData_.cubeTilingPV, &pipe_);
   mmPV_.SetOrgShape(tilingData_.cubeTilingPV.M, tilingData_.cubeTilingPV.N,
                     tilingData_.cubeTilingPV.Ka, tilingData_.cubeTilingPV.Kb);
+
+  LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
+  mmQK_.SetLocalWorkspace(mmWs);
+  mmPV_.SetLocalWorkspace(mmWs);
 }
 
 __aicore__ inline void FlashAttentionFwdKernel::Process() {
@@ -153,26 +159,27 @@ __aicore__ inline void FlashAttentionFwdKernel::Process() {
     uint64_t offsetL = (batchOffset_ + batch) * tilingData_.B_q;
     DataCopy(oGm_[offsetO], o, tilingData_.B_q * tilingData_.d);
     DataCopy(lGm_[offsetL], l, tilingData_.B_q);
+    PipeBarrier<PIPE_MTE3>();
   }
 }
 
 __aicore__ inline void
 FlashAttentionFwdKernel::InnerCycle(int32_t j, uint32_t batch,
                                     uint64_t batchOffset) {
-  PRINTF("[FWD] InnerCycle start: j=%d, batch=%d\n", j, batch);
   uint64_t offsetQ = (batchOffset + batch) * tilingData_.B_q * tilingData_.d;
   uint64_t offsetK = j * tilingData_.B_k * tilingData_.d;
   uint64_t offsetV = offsetK;
+
+  LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
+  mmQK_.SetLocalWorkspace(mmWs);
   mmQK_.SetTensorA(qGm_[offsetQ], false);
   mmQK_.SetTensorB(kGm_[offsetK], true);
 
   LocalTensor<half> sLocal = sQue_.AllocTensor<half>();
   mmQK_.IterateAll(sLocal);
   sQue_.EnQue(sLocal);
-  PRINTF("[FWD] mmQK completed\n");
 
   Compute(offsetV);
-  PRINTF("[FWD] Compute completed\n");
 }
 
 __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
@@ -211,6 +218,8 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
 
   PRINTF("[FWD] Starting mmPV\n");
   LocalTensor<half> pvRes = pvResBuf_.Get<half>();
+  LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
+  mmPV_.SetLocalWorkspace(mmWs);
   mmPV_.SetTensorA(pMatmul);
   mmPV_.SetTensorB(vGm_[offsetV], false);
   mmPV_.IterateAll(pvRes);

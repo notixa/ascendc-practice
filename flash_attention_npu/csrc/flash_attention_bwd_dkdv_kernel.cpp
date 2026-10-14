@@ -24,16 +24,16 @@ __aicore__ inline void LoadTilingFromGM(GM_ADDR tilingGM, HeaderT &dstStack) {
 class FlashAttentionBwd_dKdV_Kernel {
   using A_TYPE_QK = MatmulType<TPosition::VECIN, CubeFormat::ND, half, false>;
   using B_TYPE_QK = MatmulType<TPosition::VECIN, CubeFormat::ND, half, true>;
-  using C_TYPE_QK = MatmulType<TPosition::VECIN, CubeFormat::ND, half>;
+  using C_TYPE_QK = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
   using A_TYPE_PdO = MatmulType<TPosition::VECOUT, CubeFormat::ND, half, true>;
   using B_TYPE_PdO = MatmulType<TPosition::VECIN, CubeFormat::ND, half, false>;
-  using C_TYPE_PdO = MatmulType<TPosition::VECIN, CubeFormat::ND, half>;
+  using C_TYPE_PdO = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
   using A_TYPE_dOV = MatmulType<TPosition::VECIN, CubeFormat::ND, half, false>;
   using B_TYPE_dOV = MatmulType<TPosition::VECIN, CubeFormat::ND, half, true>;
-  using C_TYPE_dOV = MatmulType<TPosition::VECIN, CubeFormat::ND, half>;
+  using C_TYPE_dOV = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
   using A_TYPE_dSQ = MatmulType<TPosition::VECIN, CubeFormat::ND, half, true>;
   using B_TYPE_dSQ = MatmulType<TPosition::VECIN, CubeFormat::ND, half, false>;
-  using C_TYPE_dSQ = MatmulType<TPosition::VECIN, CubeFormat::ND, half>;
+  using C_TYPE_dSQ = MatmulType<TPosition::VECCALC, CubeFormat::ND, half>;
 
 public:
   __aicore__ inline FlashAttentionBwd_dKdV_Kernel() {}
@@ -74,6 +74,7 @@ private:
   TBuf<TPosition::VECCALC> dpBuf_;
   TBuf<TPosition::VECCALC> dsBuf_;
   TBuf<TPosition::VECCALC> scalarBuf_;
+  TBuf<TPosition::VECCALC> mmWorkspaceBuf_;
   TQue<TPosition::VECIN, FLASH_QUEUE_DEPTH> qQue_;
   TQue<TPosition::VECIN, FLASH_QUEUE_DEPTH> doQue_;
   TQue<TPosition::VECIN, FLASH_QUEUE_DEPTH> lQue_;
@@ -141,6 +142,7 @@ FlashAttentionBwd_dKdV_Kernel::Init(GM_ADDR Q, GM_ADDR O, GM_ADDR dO, GM_ADDR K,
   pipe_.InitBuffer(dpBuf_, tilingData_.B_q * tilingData_.B_k * sizeof(half));
   pipe_.InitBuffer(dsBuf_, tilingData_.B_q * tilingData_.B_k * sizeof(half));
   pipe_.InitBuffer(scalarBuf_, 32);
+  pipe_.InitBuffer(mmWorkspaceBuf_, 16384);
 
   mmQK_.Init(&tilingData_.cubeTilingQK, &pipe_);
   mmQK_.SetOrgShape(tilingData_.cubeTilingQK.M, tilingData_.cubeTilingQK.N,
@@ -157,6 +159,12 @@ FlashAttentionBwd_dKdV_Kernel::Init(GM_ADDR Q, GM_ADDR O, GM_ADDR dO, GM_ADDR K,
   mmdSQ_.Init(&tilingData_.cubeTilingdSQ, &pipe_);
   mmdSQ_.SetOrgShape(tilingData_.cubeTilingdSQ.M, tilingData_.cubeTilingdSQ.N,
                      tilingData_.cubeTilingdSQ.Ka, tilingData_.cubeTilingdSQ.Kb);
+
+  LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
+  mmQK_.SetLocalWorkspace(mmWs);
+  mmPdO_.SetLocalWorkspace(mmWs);
+  mmdOV_.SetLocalWorkspace(mmWs);
+  mmdSQ_.SetLocalWorkspace(mmWs);
 }
 __aicore__ inline void FlashAttentionBwd_dKdV_Kernel::Process() {
   uint32_t T_q = (tilingData_.N_q + tilingData_.B_q - 1) / tilingData_.B_q;
@@ -227,7 +235,9 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i) {
   LocalTensor<half> sMatmul = sQue_.AllocTensor<half>();
   LocalTensor<half> tmpMmRes = tmpMmResBuf_.Get<half>();
   LocalTensor<half> scalar = scalarBuf_.Get<half>();
+  LocalTensor<uint8_t> mmWs = mmWorkspaceBuf_.Get<uint8_t>();
 
+  mmQK_.SetLocalWorkspace(mmWs);
   mmQK_.SetTensorA(qLocal, false);
   mmQK_.SetTensorB(kLocal, true);
   mmQK_.IterateAll(sMatmul);
@@ -245,11 +255,13 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i) {
   Exp(pLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
   sQue_.FreeTensor(sLocal);
 
+  mmPdO_.SetLocalWorkspace(mmWs);
   mmPdO_.SetTensorA(pLocal, true);
   mmPdO_.SetTensorB(doLocal, false);
   mmPdO_.IterateAll(tmpMmRes);
   Add(dvLocal, dvLocal, tmpMmRes, tilingData_.d * tilingData_.B_k);
 
+  mmdOV_.SetLocalWorkspace(mmWs);
   mmdOV_.SetTensorA(doLocal, false);
   mmdOV_.SetTensorB(vLocal, true);
   mmdOV_.IterateAll(dpLocal);
@@ -263,6 +275,7 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i) {
   dQue_.FreeTensor(dLocal);
   Mul(dsLocal, pLocal, dpLocal, tilingData_.B_q * tilingData_.B_k);
 
+  mmdSQ_.SetLocalWorkspace(mmWs);
   mmdSQ_.SetTensorA(dsLocal, true);
   mmdSQ_.SetTensorB(qLocal, false);
   mmdSQ_.IterateAll(tmpMmRes);
