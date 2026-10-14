@@ -70,7 +70,6 @@ private:
   TBuf<TPosition::VECCALC> dvBuf_;
   TBuf<TPosition::VECCALC> tmpMmResBuf_;
   TBuf<TPosition::VECCALC> dpBuf_;
-  TBuf<TPosition::VECCALC> dsBuf_;
   TBuf<TPosition::VECCALC> sBuf_;
   TBuf<TPosition::VECCALC> scalarBuf_;
   TBuf<TPosition::VECCALC> mmWorkspaceBuf_;
@@ -218,7 +217,6 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offset) {
   LocalTensor<half> dkLocal = dkBuf_.Get<half>();
   LocalTensor<half> dvLocal = dvBuf_.Get<half>();
   LocalTensor<half> dpLocal = dpBuf_.Get<half>();
-  LocalTensor<half> dsLocal = dsBuf_.Get<half>();
   LocalTensor<half> sLocal = sBuf_.Get<half>();
   LocalTensor<half> tmpMmRes = tmpMmResBuf_.Get<half>();
   LocalTensor<half> scalar = scalarBuf_.Get<half>();
@@ -262,9 +260,9 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offset) {
          static_cast<half>(-static_cast<float>(d)), tilingData_.B_k);
   }
   dQue_.FreeTensor(dLocal);
-  Mul(dsLocal, sLocal, dpLocal, tilingData_.B_q * tilingData_.B_k);
+  Mul(dpLocal, sLocal, dpLocal, tilingData_.B_q * tilingData_.B_k);
 
-  mmdSQ_.SetTensorA(dsLocal, true);
+  mmdSQ_.SetTensorA(dpLocal, true);
   mmdSQ_.SetTensorB(qLocal, false);
 
   mmPdO_.GetTensorC(tmpMmRes);
