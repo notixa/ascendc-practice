@@ -160,9 +160,9 @@ __aicore__ inline void FlashAttentionBwd_dQ_Kernel::Process() {
     }
     uint64_t offset = (batchOffset_ + batch) * tilingData_.d * tilingData_.B_q;
     LocalTensor<half> dq = dqBuf_.Get<half>();
-    PipeBarrier<PIPE_V>();
+    PipeBarrier<PIPE_ALL>();
     DataCopy(dqGm_[offset], dq, tilingData_.B_q * tilingData_.d);
-    PipeBarrier<PIPE_MTE3>();
+    PipeBarrier<PIPE_ALL>();
   }
 }
 
@@ -225,6 +225,7 @@ FlashAttentionBwd_dQ_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetQ) {
   mmdOV_.SetTensorB(vLocal, true);
   mmdOV_.Iterate();
 
+  PipeBarrier<PIPE_ALL>();
   // 3. 与 mmdOV_ 并发：Vector 计算 Softmax P = exp(S * scale - l)
   Muls(sLocal, sLocal, static_cast<half>(tilingData_.scale),
        tilingData_.B_q * tilingData_.B_k);
@@ -238,6 +239,7 @@ FlashAttentionBwd_dQ_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetQ) {
 
   // 4. 等待并取出 dP
   mmdOV_.GetTensorC(dpLocal);
+  PipeBarrier<PIPE_ALL>();
   vQue_.FreeTensor(vLocal);
 
   // 5. Vector 计算常数折叠后的 dS = (dP - D) * P * scale
@@ -252,13 +254,15 @@ FlashAttentionBwd_dQ_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetQ) {
        tilingData_.B_q * tilingData_.B_k);
 
   // 6. dS @ K -> dQ
-  PipeBarrier<PIPE_V>();
+  PipeBarrier<PIPE_ALL>();
   mmdSK_.SetLocalWorkspace(mmWs1);
   mmdSK_.SetTensorA(dpLocal, false);
   mmdSK_.SetTensorB(kLocal, false);
   mmdSK_.Iterate();
   mmdSK_.GetTensorC(tmpMmRes);
+  PipeBarrier<PIPE_ALL>();
   Add(dqLocal, dqLocal, tmpMmRes, tilingData_.d * tilingData_.B_q);
+  PipeBarrier<PIPE_ALL>();
   kQue_.FreeTensor(kLocal);
 }
 

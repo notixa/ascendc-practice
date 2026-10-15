@@ -156,10 +156,10 @@ __aicore__ inline void FlashAttentionFwdKernel::Process() {
     Add(l, logL, m, tilingData_.B_q);
     uint64_t offsetO = (batchOffset_ + batch) * tilingData_.B_q * tilingData_.d;
     uint64_t offsetL = (batchOffset_ + batch) * tilingData_.B_q;
-    PipeBarrier<PIPE_V>();
+    PipeBarrier<PIPE_ALL>();
     DataCopy(oGm_[offsetO], o, tilingData_.B_q * tilingData_.d);
     DataCopy(lGm_[offsetL], l, tilingData_.B_q);
-    PipeBarrier<PIPE_MTE3>();
+    PipeBarrier<PIPE_ALL>();
   }
 }
 
@@ -178,6 +178,7 @@ FlashAttentionFwdKernel::InnerCycle(int32_t j, uint32_t batch,
   mmQK_.SetTensorB(kGm_[offsetK], true);
   mmQK_.Iterate();
   mmQK_.GetTensorC(sLocal);
+  PipeBarrier<PIPE_ALL>();
 
   Compute(offsetV);
 }
@@ -210,16 +211,9 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
   }
   // P in-place reuses sLocal
   Exp(sLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
+  PipeBarrier<PIPE_V>();
 
-  // 异步下发 P @ V -> pvRes (Cube后台运行)
-  LocalTensor<half> pvRes = pvResBuf_.Get<half>();
-  LocalTensor<uint8_t> mmWsPV = mmWsPVBuf_.Get<uint8_t>();
-  mmPV_.SetLocalWorkspace(mmWsPV);
-  mmPV_.SetTensorA(sLocal, false);
-  mmPV_.SetTensorB(vGm_[offsetV], false);
-  mmPV_.Iterate();
-
-  // 与 mmPV_ 并发：Vector 计算 Softmax rowSum 并更新 L 与 O
+  // 1. Vector 计算 Softmax rowSum 并更新 L 与 O
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
     ReduceSum(sumLocal[i], sLocal[i * tilingData_.B_k], reduceLocal,
               tilingData_.B_k);
@@ -236,9 +230,20 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
     Muls(o[i * tilingData_.d], o[i * tilingData_.d], scl, tilingData_.d);
   }
 
-  // 等待并取出 pvRes，累加到 o
+  // 2. 下发 P @ V -> pvRes (Cube后台运行)
+  LocalTensor<half> pvRes = pvResBuf_.Get<half>();
+  LocalTensor<uint8_t> mmWsPV = mmWsPVBuf_.Get<uint8_t>();
+  PipeBarrier<PIPE_ALL>();
+  mmPV_.SetLocalWorkspace(mmWsPV);
+  mmPV_.SetTensorA(sLocal, false);
+  mmPV_.SetTensorB(vGm_[offsetV], false);
+  mmPV_.Iterate();
+
+  // 3. 等待并取出 pvRes，累加到 o
   mmPV_.GetTensorC(pvRes);
+  PipeBarrier<PIPE_ALL>();
   Add(o, o, pvRes, tilingData_.B_q * tilingData_.d);
+  PipeBarrier<PIPE_ALL>();
 }
 
 extern "C" __global__ __aicore__ void

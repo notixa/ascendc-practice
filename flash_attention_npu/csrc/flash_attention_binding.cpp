@@ -95,9 +95,9 @@ std::vector<at::Tensor> flash_attention_forward(
         at::Tensor tilingTensor = at::empty(
             {static_cast<int64_t>(sizeof(FlashAttentionFwdTilingData))},
             q_contig.options().dtype(at::kByte));
-        aclrtMemcpyAsync(tilingTensor.data_ptr(), sizeof(FlashAttentionFwdTilingData),
-                         &tilingData, sizeof(FlashAttentionFwdTilingData),
-                         ACL_MEMCPY_HOST_TO_DEVICE, stream);
+        aclrtMemcpy(tilingTensor.data_ptr(), sizeof(FlashAttentionFwdTilingData),
+                     &tilingData, sizeof(FlashAttentionFwdTilingData),
+                     ACL_MEMCPY_HOST_TO_DEVICE);
 
         FlashAttentionFwdKernel_do(blockDim, stream,
                                    q_contig.data_ptr(), k_contig.data_ptr(), v_contig.data_ptr(),
@@ -242,16 +242,16 @@ std::vector<at::Tensor> flash_attention_backward(
         at::Tensor tilingTensor_dkdv = at::empty(
             {static_cast<int64_t>(sizeof(FlashAttentionBwd_dKdV_TilingData))},
             q_contig.options().dtype(at::kByte));
-        aclrtMemcpyAsync(tilingTensor_dkdv.data_ptr(), sizeof(FlashAttentionBwd_dKdV_TilingData),
-                         &tilingData_dkdv, sizeof(FlashAttentionBwd_dKdV_TilingData),
-                         ACL_MEMCPY_HOST_TO_DEVICE, stream);
+        aclrtMemcpy(tilingTensor_dkdv.data_ptr(), sizeof(FlashAttentionBwd_dKdV_TilingData),
+                     &tilingData_dkdv, sizeof(FlashAttentionBwd_dKdV_TilingData),
+                     ACL_MEMCPY_HOST_TO_DEVICE);
 
         at::Tensor tilingTensor_dq = at::empty(
             {static_cast<int64_t>(sizeof(FlashAttentionBwd_dQ_TilingData))},
             q_contig.options().dtype(at::kByte));
-        aclrtMemcpyAsync(tilingTensor_dq.data_ptr(), sizeof(FlashAttentionBwd_dQ_TilingData),
-                         &tilingData_dq, sizeof(FlashAttentionBwd_dQ_TilingData),
-                         ACL_MEMCPY_HOST_TO_DEVICE, stream);
+        aclrtMemcpy(tilingTensor_dq.data_ptr(), sizeof(FlashAttentionBwd_dQ_TilingData),
+                     &tilingData_dq, sizeof(FlashAttentionBwd_dQ_TilingData),
+                     ACL_MEMCPY_HOST_TO_DEVICE);
 
         FlashAttentionBwd_dKdV_Kernel_do(
             blockDim_dkdv, stream,

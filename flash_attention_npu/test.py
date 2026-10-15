@@ -1,4 +1,6 @@
 import os
+os.environ["TE_PARALLEL_NUM"] = "1"
+os.environ["TBE_PARALLEL_NUM"] = "1"
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 import sys
 import torch
