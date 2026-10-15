@@ -81,10 +81,6 @@ std::vector<at::Tensor> flash_attention_forward(
 
     uint32_t blockDim = tilingData.coreNum;
 
-    auto launch_kernel = [&](void *q_p, void *k_p, void *v_p, void *o_p, void *l_p, aclrtStream stream) {
-        FlashAttentionFwdKernel_do(blockDim, stream, q_p, k_p, v_p, o_p, l_p, tilingData);
-    };
-
     // 2. 根据 Tensor 位置执行 Launch
     bool is_device_tensor = false;
 #if HAS_TORCH_NPU
@@ -95,9 +91,17 @@ std::vector<at::Tensor> flash_attention_forward(
 
     if (is_device_tensor) {
 #if HAS_TORCH_NPU
-        auto stream = c10_npu::getCurrentNPUStream().stream(false);
-        launch_kernel(q_contig.data_ptr(), k_contig.data_ptr(), v_contig.data_ptr(),
-                      o.data_ptr(), l.data_ptr(), stream);
+        auto stream = c10_npu::getCurrentNPUStream().stream(true);
+        at::Tensor tilingTensor = at::empty(
+            {static_cast<int64_t>(sizeof(FlashAttentionFwdTilingData))},
+            q_contig.options().dtype(at::kByte));
+        aclrtMemcpyAsync(tilingTensor.data_ptr(), sizeof(FlashAttentionFwdTilingData),
+                         &tilingData, sizeof(FlashAttentionFwdTilingData),
+                         ACL_MEMCPY_HOST_TO_DEVICE, stream);
+
+        FlashAttentionFwdKernel_do(blockDim, stream,
+                                   q_contig.data_ptr(), k_contig.data_ptr(), v_contig.data_ptr(),
+                                   o.data_ptr(), l.data_ptr(), tilingTensor.data_ptr());
 #endif
     } else {
         // CPU fallback 模式：Host -> Device -> Launch -> Device -> Host
@@ -108,12 +112,14 @@ std::vector<at::Tensor> flash_attention_forward(
         size_t v_bytes = v_contig.numel() * sizeof(uint16_t);
         size_t o_bytes = o.numel() * sizeof(uint16_t);
         size_t l_bytes = l.numel() * sizeof(uint16_t);
+        size_t tiling_bytes = sizeof(FlashAttentionFwdTilingData);
 
         void *d_q = nullptr;
         void *d_k = nullptr;
         void *d_v = nullptr;
         void *d_o = nullptr;
         void *d_l = nullptr;
+        void *d_tiling = nullptr;
 
         aclError ret = aclrtMalloc(&d_q, q_bytes, ACL_MEM_MALLOC_HUGE_FIRST);
         TORCH_CHECK(ret == ACL_ERROR_NONE, "aclrtMalloc d_q failed: ", ret);
@@ -125,12 +131,15 @@ std::vector<at::Tensor> flash_attention_forward(
         TORCH_CHECK(ret == ACL_ERROR_NONE, "aclrtMalloc d_o failed: ", ret);
         ret = aclrtMalloc(&d_l, l_bytes, ACL_MEM_MALLOC_HUGE_FIRST);
         TORCH_CHECK(ret == ACL_ERROR_NONE, "aclrtMalloc d_l failed: ", ret);
+        ret = aclrtMalloc(&d_tiling, tiling_bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+        TORCH_CHECK(ret == ACL_ERROR_NONE, "aclrtMalloc d_tiling failed: ", ret);
 
         aclrtMemcpyAsync(d_q, q_bytes, q_contig.data_ptr(), q_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
         aclrtMemcpyAsync(d_k, k_bytes, k_contig.data_ptr(), k_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
         aclrtMemcpyAsync(d_v, v_bytes, v_contig.data_ptr(), v_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
+        aclrtMemcpyAsync(d_tiling, tiling_bytes, &tilingData, tiling_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
 
-        launch_kernel(d_q, d_k, d_v, d_o, d_l, stream);
+        FlashAttentionFwdKernel_do(blockDim, stream, d_q, d_k, d_v, d_o, d_l, d_tiling);
 
         aclrtMemcpyAsync(o.data_ptr(), o_bytes, d_o, o_bytes, ACL_MEMCPY_DEVICE_TO_HOST, stream);
         aclrtMemcpyAsync(l.data_ptr(), l_bytes, d_l, l_bytes, ACL_MEMCPY_DEVICE_TO_HOST, stream);
@@ -141,6 +150,7 @@ std::vector<at::Tensor> flash_attention_forward(
         aclrtFree(d_v);
         aclrtFree(d_o);
         aclrtFree(d_l);
+        aclrtFree(d_tiling);
     }
 
     return {o, l};
@@ -215,21 +225,6 @@ std::vector<at::Tensor> flash_attention_backward(
     uint32_t blockDim_dkdv = tilingData_dkdv.coreNum;
     uint32_t blockDim_dq   = tilingData_dq.coreNum;
 
-    auto launch_bwd_kernels = [&](void *q_p, void *o_p, void *do_p, void *k_p, void *v_p,
-                                  void *l_p, void *d_p, void *dq_p, void *dk_p, void *dv_p,
-                                  aclrtStream stream) {
-        FlashAttentionBwd_dKdV_Kernel_do(
-            blockDim_dkdv, stream,
-            q_p, o_p, do_p, k_p, v_p,
-            l_p, d_p, dk_p, dv_p,
-            tilingData_dkdv);
-        FlashAttentionBwd_dQ_Kernel_do(
-            blockDim_dq, stream,
-            q_p, o_p, do_p, k_p, v_p,
-            l_p, d_p, dq_p,
-            tilingData_dq);
-    };
-
     // 2. 根据 Tensor 位置执行 Launch
     bool is_device_tensor = false;
 #if HAS_TORCH_NPU
@@ -242,12 +237,35 @@ std::vector<at::Tensor> flash_attention_backward(
 
     if (is_device_tensor) {
 #if HAS_TORCH_NPU
-        auto stream = c10_npu::getCurrentNPUStream().stream(false);
-        launch_bwd_kernels(
+        auto stream = c10_npu::getCurrentNPUStream().stream(true);
+
+        at::Tensor tilingTensor_dkdv = at::empty(
+            {static_cast<int64_t>(sizeof(FlashAttentionBwd_dKdV_TilingData))},
+            q_contig.options().dtype(at::kByte));
+        aclrtMemcpyAsync(tilingTensor_dkdv.data_ptr(), sizeof(FlashAttentionBwd_dKdV_TilingData),
+                         &tilingData_dkdv, sizeof(FlashAttentionBwd_dKdV_TilingData),
+                         ACL_MEMCPY_HOST_TO_DEVICE, stream);
+
+        at::Tensor tilingTensor_dq = at::empty(
+            {static_cast<int64_t>(sizeof(FlashAttentionBwd_dQ_TilingData))},
+            q_contig.options().dtype(at::kByte));
+        aclrtMemcpyAsync(tilingTensor_dq.data_ptr(), sizeof(FlashAttentionBwd_dQ_TilingData),
+                         &tilingData_dq, sizeof(FlashAttentionBwd_dQ_TilingData),
+                         ACL_MEMCPY_HOST_TO_DEVICE, stream);
+
+        FlashAttentionBwd_dKdV_Kernel_do(
+            blockDim_dkdv, stream,
             q_contig.data_ptr(), o_contig.data_ptr(), do_contig.data_ptr(),
             k_contig.data_ptr(), v_contig.data_ptr(), l_contig.data_ptr(),
-            d_tensor.data_ptr(), dq.data_ptr(), dk.data_ptr(), dv.data_ptr(),
-            stream);
+            d_tensor.data_ptr(), dk.data_ptr(), dv.data_ptr(),
+            tilingTensor_dkdv.data_ptr());
+
+        FlashAttentionBwd_dQ_Kernel_do(
+            blockDim_dq, stream,
+            q_contig.data_ptr(), o_contig.data_ptr(), do_contig.data_ptr(),
+            k_contig.data_ptr(), v_contig.data_ptr(), l_contig.data_ptr(),
+            d_tensor.data_ptr(), dq.data_ptr(),
+            tilingTensor_dq.data_ptr());
 #endif
     } else {
         // CPU fallback 模式：Host -> Device -> Launch -> Device -> Host
@@ -263,6 +281,8 @@ std::vector<at::Tensor> flash_attention_backward(
         size_t dq_bytes  = dq.numel() * sizeof(uint16_t);
         size_t dk_bytes  = dk.numel() * sizeof(uint16_t);
         size_t dv_bytes  = dv.numel() * sizeof(uint16_t);
+        size_t dkdv_tiling_bytes = sizeof(FlashAttentionBwd_dKdV_TilingData);
+        size_t dq_tiling_bytes   = sizeof(FlashAttentionBwd_dQ_TilingData);
 
         void *dev_q   = nullptr;
         void *dev_k   = nullptr;
@@ -274,6 +294,8 @@ std::vector<at::Tensor> flash_attention_backward(
         void *dev_dq  = nullptr;
         void *dev_dk  = nullptr;
         void *dev_dv  = nullptr;
+        void *dev_tiling_dkdv = nullptr;
+        void *dev_tiling_dq   = nullptr;
 
         aclError ret;
         ret = aclrtMalloc(&dev_q, q_bytes, ACL_MEM_MALLOC_HUGE_FIRST);
@@ -296,6 +318,10 @@ std::vector<at::Tensor> flash_attention_backward(
         TORCH_CHECK(ret == ACL_ERROR_NONE, "aclrtMalloc dev_dk failed: ", ret);
         ret = aclrtMalloc(&dev_dv, dv_bytes, ACL_MEM_MALLOC_HUGE_FIRST);
         TORCH_CHECK(ret == ACL_ERROR_NONE, "aclrtMalloc dev_dv failed: ", ret);
+        ret = aclrtMalloc(&dev_tiling_dkdv, dkdv_tiling_bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+        TORCH_CHECK(ret == ACL_ERROR_NONE, "aclrtMalloc dev_tiling_dkdv failed: ", ret);
+        ret = aclrtMalloc(&dev_tiling_dq, dq_tiling_bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+        TORCH_CHECK(ret == ACL_ERROR_NONE, "aclrtMalloc dev_tiling_dq failed: ", ret);
 
         aclrtMemcpyAsync(dev_q, q_bytes, q_contig.data_ptr(), q_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
         aclrtMemcpyAsync(dev_k, k_bytes, k_contig.data_ptr(), k_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
@@ -304,10 +330,20 @@ std::vector<at::Tensor> flash_attention_backward(
         aclrtMemcpyAsync(dev_do, do_bytes, do_contig.data_ptr(), do_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
         aclrtMemcpyAsync(dev_l, l_bytes, l_contig.data_ptr(), l_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
         aclrtMemcpyAsync(dev_d, d_bytes, d_tensor.data_ptr(), d_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
+        aclrtMemcpyAsync(dev_tiling_dkdv, dkdv_tiling_bytes, &tilingData_dkdv, dkdv_tiling_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
+        aclrtMemcpyAsync(dev_tiling_dq, dq_tiling_bytes, &tilingData_dq, dq_tiling_bytes, ACL_MEMCPY_HOST_TO_DEVICE, stream);
 
-        launch_bwd_kernels(
-            dev_q, dev_o, dev_do, dev_k, dev_v, dev_l, dev_d,
-            dev_dq, dev_dk, dev_dv, stream);
+        FlashAttentionBwd_dKdV_Kernel_do(
+            blockDim_dkdv, stream,
+            dev_q, dev_o, dev_do, dev_k, dev_v,
+            dev_l, dev_d, dev_dk, dev_dv,
+            dev_tiling_dkdv);
+
+        FlashAttentionBwd_dQ_Kernel_do(
+            blockDim_dq, stream,
+            dev_q, dev_o, dev_do, dev_k, dev_v,
+            dev_l, dev_d, dev_dq,
+            dev_tiling_dq);
 
         aclrtMemcpyAsync(dq.data_ptr(), dq_bytes, dev_dq, dq_bytes, ACL_MEMCPY_DEVICE_TO_HOST, stream);
         aclrtMemcpyAsync(dk.data_ptr(), dk_bytes, dev_dk, dk_bytes, ACL_MEMCPY_DEVICE_TO_HOST, stream);
@@ -324,6 +360,8 @@ std::vector<at::Tensor> flash_attention_backward(
         aclrtFree(dev_dq);
         aclrtFree(dev_dk);
         aclrtFree(dev_dv);
+        aclrtFree(dev_tiling_dkdv);
+        aclrtFree(dev_tiling_dq);
     }
 
     return {dq, dk, dv};

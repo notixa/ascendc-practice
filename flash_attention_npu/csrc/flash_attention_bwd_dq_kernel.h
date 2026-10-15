@@ -15,9 +15,21 @@ inline void FlashAttentionBwd_dQ_Kernel_do(
     uint32_t blockDim, void *stream,
     void *q, void *o, void *do_grad, void *k, void *v,
     void *l, void *d, void *dq,
+    void *tiling_gm) {
+    aclrtlaunch_flash_attention_bwd_dq_kernel(
+        blockDim, stream,
+        q, o, do_grad, k, v, l, d, dq,
+        tiling_gm);
+}
+
+inline void FlashAttentionBwd_dQ_Kernel_do(
+    uint32_t blockDim, void *stream,
+    void *q, void *o, void *do_grad, void *k, void *v,
+    void *l, void *d, void *dq,
     const FlashAttentionBwd_dQ_TilingData &tiling) {
     aclrtlaunch_flash_attention_bwd_dq_kernel(
         blockDim, stream,
         q, o, do_grad, k, v, l, d, dq,
         const_cast<FlashAttentionBwd_dQ_TilingData *>(&tiling));
 }
+

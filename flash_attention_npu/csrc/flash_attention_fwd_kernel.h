@@ -13,8 +13,17 @@ uint32_t aclrtlaunch_flash_attention_fwd_kernel(
 inline void FlashAttentionFwdKernel_do(
     uint32_t blockDim, void *stream,
     void *q, void *k, void *v, void *o, void *l,
+    void *tiling_gm) {
+    aclrtlaunch_flash_attention_fwd_kernel(
+        blockDim, stream, q, k, v, o, l, tiling_gm);
+}
+
+inline void FlashAttentionFwdKernel_do(
+    uint32_t blockDim, void *stream,
+    void *q, void *k, void *v, void *o, void *l,
     const FlashAttentionFwdTilingData &tiling) {
     aclrtlaunch_flash_attention_fwd_kernel(
         blockDim, stream, q, k, v, o, l,
         const_cast<FlashAttentionFwdTilingData *>(&tiling));
 }
+
