@@ -239,7 +239,6 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
   // 等待并取出 pvRes，累加到 o
   mmPV_.GetTensorC(pvRes);
   Add(o, o, pvRes, tilingData_.B_q * tilingData_.d);
-  PipeBarrier<PIPE_ALL>();
 }
 
 extern "C" __global__ __aicore__ void
