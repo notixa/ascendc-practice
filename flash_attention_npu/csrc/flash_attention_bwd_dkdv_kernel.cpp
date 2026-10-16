@@ -77,6 +77,10 @@ private:
   FlashAttentionBwd_dKdV_TilingData tilingData_;
   uint32_t batchNum_;
   uint32_t batchOffset_;
+
+  static constexpr event_t EVENT_VM_ID = EVENT_ID0;
+  static constexpr event_t EVENT_V_MTE3_ID = EVENT_ID0;
+  static constexpr event_t EVENT_MTE3_V_ID = EVENT_ID0;
 };
 
 __aicore__ inline void
@@ -158,10 +162,10 @@ __aicore__ inline void FlashAttentionBwd_dKdV_Kernel::Process() {
     }
     LocalTensor<half> dk = dkBuf_.Get<half>();
     LocalTensor<half> dv = dvBuf_.Get<half>();
-    PipeBarrier<PIPE_ALL>();
+    SetFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
+    WaitFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
     DataCopy(dkGm_[offsetKV], dk, tilingData_.B_k * tilingData_.d);
     DataCopy(dvGm_[offsetKV], dv, tilingData_.B_k * tilingData_.d);
-    PipeBarrier<PIPE_ALL>();
   }
 }
 
@@ -171,7 +175,6 @@ FlashAttentionBwd_dKdV_Kernel::CopyInAndInit(uint32_t batch) {
   LocalTensor<half> dvLocal = dvBuf_.Get<half>();
   Duplicate(dkLocal, static_cast<half>(0.0f), tilingData_.B_k * tilingData_.d);
   Duplicate(dvLocal, static_cast<half>(0.0f), tilingData_.B_k * tilingData_.d);
-  PipeBarrier<PIPE_MTE2>();
 }
 
 __aicore__ inline void
@@ -233,7 +236,8 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
   mmdOV_.GetTensorC(dpRes);
   dpQue_.EnQue(dpRes);
 
-  PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::V_M>(EVENT_VM_ID);
+  WaitFlag<HardEvent::V_M>(EVENT_VM_ID);
   // 3. 阶段二异步重叠：Cube 异步计算 P^T @ dO -> dV，Vector 并发计算 dS
   mmPdO_.SetLocalWorkspace(mmWs1);
   mmPdO_.SetTensorA(sLocal, true);
@@ -259,11 +263,14 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
   mmPdO_.GetTensorC(tmpMmRes);
   tmpMmResQue_.EnQue(tmpMmRes);
   LocalTensor<half> tmpMmLocal = tmpMmResQue_.DeQue<half>();
+  SetFlag<HardEvent::MTE3_V>(EVENT_MTE3_V_ID);
+  WaitFlag<HardEvent::MTE3_V>(EVENT_MTE3_V_ID);
   Add(dvLocal, dvLocal, tmpMmLocal, tilingData_.d * tilingData_.B_k);
   tmpMmResQue_.FreeTensor(tmpMmLocal);
 
   // 4. 计算 dS^T @ Q -> dK
-  PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::V_M>(EVENT_VM_ID);
+  WaitFlag<HardEvent::V_M>(EVENT_VM_ID);
   mmPdO_.SetLocalWorkspace(mmWs1);
   mmPdO_.SetTensorA(dpLocal, true);
   mmPdO_.SetTensorB(qGm_[offset2D], false);

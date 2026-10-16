@@ -60,7 +60,6 @@ private:
   TBuf<TPosition::VECCALC> L;
   TBuf<TPosition::VECCALC> O;
   TBuf<TPosition::VECCALC> mBuf_;
-  TBuf<TPosition::VECCALC> pBuf_;
   TBuf<TPosition::VECCALC> prevMBuf_;
   TBuf<TPosition::VECCALC> rowMaxBuf_;
   TBuf<TPosition::VECCALC> rowSumBuf_;
@@ -71,6 +70,11 @@ private:
   TBuf<TPosition::VECCALC> mmWsPVBuf_;
   Matmul<A_TYPE_QK, B_TYPE_QK, C_TYPE_QK> mmQK_;
   Matmul<A_TYPE_PV, B_TYPE_PV, C_TYPE_PV> mmPV_;
+
+  static constexpr event_t EVENT_VS_ID = EVENT_ID0;
+  static constexpr event_t EVENT_VM_ID = EVENT_ID0;
+  static constexpr event_t EVENT_V_MTE3_ID = EVENT_ID0;
+  static constexpr event_t EVENT_MTE3_V_ID = EVENT_ID0;
 };
 
 __aicore__ inline void FlashAttentionFwdKernel::Init(GM_ADDR Q, GM_ADDR K,
@@ -104,7 +108,6 @@ __aicore__ inline void FlashAttentionFwdKernel::Init(GM_ADDR Q, GM_ADDR K,
   lGm_.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(L), tilingData_.N_q);
 
   pipe_.InitBuffer(sQue_, 1, tilingData_.B_q * tilingData_.B_k * sizeof(half));
-  pipe_.InitBuffer(pBuf_, tilingData_.B_q * tilingData_.B_k * sizeof(half));
   pipe_.InitBuffer(this->L, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(this->O, tilingData_.B_q * tilingData_.d * sizeof(half));
   pipe_.InitBuffer(mBuf_, tilingData_.B_q * sizeof(half));
@@ -150,7 +153,8 @@ __aicore__ inline void FlashAttentionFwdKernel::Process() {
     LocalTensor<half> m = mBuf_.Get<half>();
     LocalTensor<half> logL = rowSumBuf_.Get<half>();
 
-    PipeBarrier<PIPE_ALL>();
+    SetFlag<HardEvent::V_S>(EVENT_VS_ID);
+    WaitFlag<HardEvent::V_S>(EVENT_VS_ID);
     for (int32_t i = 0; i < tilingData_.B_q; ++i) {
       half scale = static_cast<half>(1.0f / static_cast<float>(l.GetValue(i)));
       Muls(o[i * tilingData_.d], o[i * tilingData_.d], scale, tilingData_.d);
@@ -160,10 +164,10 @@ __aicore__ inline void FlashAttentionFwdKernel::Process() {
     Add(l, logL, m, tilingData_.B_q);
     uint64_t offsetO = (batchOffset_ + batch) * tilingData_.B_q * tilingData_.d;
     uint64_t offsetL = (batchOffset_ + batch) * tilingData_.B_q;
-    PipeBarrier<PIPE_ALL>();
+    SetFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
+    WaitFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
     DataCopy(oGm_[offsetO], o, tilingData_.B_q * tilingData_.d);
     DataCopy(lGm_[offsetL], l, tilingData_.B_q);
-    PipeBarrier<PIPE_ALL>();
   }
 }
 
@@ -193,7 +197,6 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
   LocalTensor<half> mLocal = mBuf_.Get<half>();
   LocalTensor<half> prevMLocal = prevMBuf_.Get<half>();
   LocalTensor<half> sumLocal = rowSumBuf_.Get<half>();
-  LocalTensor<half> pLocal = pBuf_.Get<half>();
   LocalTensor<half> scaleLocal = scaleBuf_.Get<half>();
 
   half scale = tilingData_.scale;
@@ -211,33 +214,38 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
   PipeBarrier<PIPE_V>();
   Exp(scaleLocal, scaleLocal, tilingData_.B_q);
 
-  PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::V_S>(EVENT_VS_ID);
+  WaitFlag<HardEvent::V_S>(EVENT_VS_ID);
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
     half m = mLocal.GetValue(i);
     Adds(sLocal[i * tilingData_.B_k], sLocal[i * tilingData_.B_k],
          static_cast<half>(-static_cast<float>(m)), tilingData_.B_k);
   }
   // P in-place reuses sLocal
-  Exp(pLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
-  sQue_.FreeTensor(sLocal);
-  PipeBarrier<PIPE_ALL>();
+  Exp(sLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
+
+  SetFlag<HardEvent::V_M>(EVENT_VM_ID);
+  WaitFlag<HardEvent::V_M>(EVENT_VM_ID)；
 
   // 1. 异步下发 P @ V -> pvRes (Cube后台运行)
   LocalTensor<half> pvRes = pvResQue_.AllocTensor<half>();
   LocalTensor<uint8_t> mmWsPV = mmWsPVBuf_.Get<uint8_t>();
   mmPV_.SetLocalWorkspace(mmWsPV);
-  mmPV_.SetTensorA(pLocal, false);
+  mmPV_.SetTensorA(sLocal, false);
   mmPV_.SetTensorB(vGm_[offsetV], false);
   mmPV_.Iterate();
 
   // 2. 与 mmPV_ 物理并发重叠：Vector 计算 Softmax rowSum 并更新 L 与 O
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
-    ReduceSum(sumLocal[i], pLocal[i * tilingData_.B_k], reduceLocal,
+    ReduceSum(sumLocal[i], sLocal[i * tilingData_.B_k], reduceLocal,
               tilingData_.B_k);
   }
+  sQue_.FreeTensor(sLocal);
 
   LocalTensor<half> l = L.Get<half>();
   LocalTensor<half> o = O.Get<half>();
+  SetFlag<HardEvent::MTE3_V>(EVENT_MTE3_V_ID);
+  WaitFlag<HardEvent::MTE3_V>(EVENT_MTE3_V_ID);
   Mul(l, scaleLocal, l, tilingData_.B_q);
   PipeBarrier<PIPE_V>();
   Add(l, l, sumLocal, tilingData_.B_q);
