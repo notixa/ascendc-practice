@@ -56,16 +56,17 @@ private:
   GlobalTensor<half> vGm_;
   GlobalTensor<half> oGm_;
   GlobalTensor<half> lGm_;
-  TBuf<TPosition::VECCALC> sBuf_;
+  TQue<TPosition::VECIN, 1> sQue_;
   TBuf<TPosition::VECCALC> L;
   TBuf<TPosition::VECCALC> O;
   TBuf<TPosition::VECCALC> mBuf_;
+  TBuf<TPosition::VECCALC> pBuf_;
   TBuf<TPosition::VECCALC> prevMBuf_;
   TBuf<TPosition::VECCALC> rowMaxBuf_;
   TBuf<TPosition::VECCALC> rowSumBuf_;
   TBuf<TPosition::VECCALC> scaleBuf_;
   TBuf<TPosition::VECCALC> reduceBuf_;
-  TBuf<TPosition::VECCALC> pvResBuf_;
+  TQue<TPosition::VECIN, 1> pvResQue_;
   TBuf<TPosition::VECCALC> mmWsQKBuf_;
   TBuf<TPosition::VECCALC> mmWsPVBuf_;
   Matmul<A_TYPE_QK, B_TYPE_QK, C_TYPE_QK> mmQK_;
@@ -102,7 +103,8 @@ __aicore__ inline void FlashAttentionFwdKernel::Init(GM_ADDR Q, GM_ADDR K,
                        tilingData_.N_q * tilingData_.d);
   lGm_.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(L), tilingData_.N_q);
 
-  pipe_.InitBuffer(sBuf_, tilingData_.B_q * tilingData_.B_k * sizeof(half));
+  pipe_.InitBuffer(sQue_, 1, tilingData_.B_q * tilingData_.B_k * sizeof(half));
+  pipe_.InitBuffer(pBuf_, tilingData_.B_q * tilingData_.B_k * sizeof(half));
   pipe_.InitBuffer(this->L, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(this->O, tilingData_.B_q * tilingData_.d * sizeof(half));
   pipe_.InitBuffer(mBuf_, tilingData_.B_q * sizeof(half));
@@ -111,7 +113,8 @@ __aicore__ inline void FlashAttentionFwdKernel::Init(GM_ADDR Q, GM_ADDR K,
   pipe_.InitBuffer(rowSumBuf_, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(scaleBuf_, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(reduceBuf_, 4096);
-  pipe_.InitBuffer(pvResBuf_, tilingData_.B_q * tilingData_.d * sizeof(half));
+  pipe_.InitBuffer(pvResQue_, 1,
+                   tilingData_.B_q * tilingData_.d * sizeof(half));
   pipe_.InitBuffer(mmWsQKBuf_, 16384);
   pipe_.InitBuffer(mmWsPVBuf_, 16384);
 
@@ -147,12 +150,13 @@ __aicore__ inline void FlashAttentionFwdKernel::Process() {
     LocalTensor<half> m = mBuf_.Get<half>();
     LocalTensor<half> logL = rowSumBuf_.Get<half>();
 
-    PipeBarrier<PIPE_V>();
+    PipeBarrier<PIPE_ALL>();
     for (int32_t i = 0; i < tilingData_.B_q; ++i) {
       half scale = static_cast<half>(1.0f / static_cast<float>(l.GetValue(i)));
       Muls(o[i * tilingData_.d], o[i * tilingData_.d], scale, tilingData_.d);
     }
     Ln(logL, l, tilingData_.B_q);
+    PipeBarrier<PIPE_V>();
     Add(l, logL, m, tilingData_.B_q);
     uint64_t offsetO = (batchOffset_ + batch) * tilingData_.B_q * tilingData_.d;
     uint64_t offsetL = (batchOffset_ + batch) * tilingData_.B_q;
@@ -171,79 +175,85 @@ FlashAttentionFwdKernel::InnerCycle(int32_t j, uint32_t batch,
   uint64_t offsetV = offsetK;
 
   LocalTensor<uint8_t> mmWsQK = mmWsQKBuf_.Get<uint8_t>();
-  LocalTensor<half> sLocal = sBuf_.Get<half>();
+  LocalTensor<half> sLocal = sQue_.AllocTensor<half>();
 
   mmQK_.SetLocalWorkspace(mmWsQK);
   mmQK_.SetTensorA(qGm_[offsetQ], false);
   mmQK_.SetTensorB(kGm_[offsetK], true);
   mmQK_.Iterate();
   mmQK_.GetTensorC(sLocal);
-  PipeBarrier<PIPE_ALL>();
+  sQue_.EnQue(sLocal);
 
   Compute(offsetV);
 }
 
 __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
-  LocalTensor<half> sLocal = sBuf_.Get<half>();
   LocalTensor<half> rowMaxLocal = rowMaxBuf_.Get<half>();
   LocalTensor<half> reduceLocal = reduceBuf_.Get<half>();
   LocalTensor<half> mLocal = mBuf_.Get<half>();
   LocalTensor<half> prevMLocal = prevMBuf_.Get<half>();
   LocalTensor<half> sumLocal = rowSumBuf_.Get<half>();
+  LocalTensor<half> pLocal = pBuf_.Get<half>();
   LocalTensor<half> scaleLocal = scaleBuf_.Get<half>();
 
   half scale = tilingData_.scale;
+  LocalTensor<half> sLocal = sQue_.DeQue<half>();
   Muls(sLocal, sLocal, scale, tilingData_.B_q * tilingData_.B_k);
-
+  PipeBarrier<PIPE_V>();
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
     ReduceMax(rowMaxLocal[i], sLocal[i * tilingData_.B_k], reduceLocal,
               tilingData_.B_k);
   }
   Adds(prevMLocal, mLocal, static_cast<half>(0.0f), tilingData_.B_q);
   Max(mLocal, mLocal, rowMaxLocal, tilingData_.B_q);
-  Sub(scaleLocal, prevMLocal, mLocal, tilingData_.B_q);
-  Exp(scaleLocal, scaleLocal, tilingData_.B_q);
   PipeBarrier<PIPE_V>();
+  Sub(scaleLocal, prevMLocal, mLocal, tilingData_.B_q);
+  PipeBarrier<PIPE_V>();
+  Exp(scaleLocal, scaleLocal, tilingData_.B_q);
+
+  PipeBarrier<PIPE_ALL>();
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
     half m = mLocal.GetValue(i);
     Adds(sLocal[i * tilingData_.B_k], sLocal[i * tilingData_.B_k],
          static_cast<half>(-static_cast<float>(m)), tilingData_.B_k);
   }
   // P in-place reuses sLocal
-  Exp(sLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
-  PipeBarrier<PIPE_V>();
+  Exp(pLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
+  sQue_.FreeTensor(sLocal);
+  PipeBarrier<PIPE_ALL>();
 
-  // 1. Vector 计算 Softmax rowSum 并更新 L 与 O
+  // 1. 异步下发 P @ V -> pvRes (Cube后台运行)
+  LocalTensor<half> pvRes = pvResQue_.AllocTensor<half>();
+  LocalTensor<uint8_t> mmWsPV = mmWsPVBuf_.Get<uint8_t>();
+  mmPV_.SetLocalWorkspace(mmWsPV);
+  mmPV_.SetTensorA(pLocal, false);
+  mmPV_.SetTensorB(vGm_[offsetV], false);
+  mmPV_.Iterate();
+
+  // 2. 与 mmPV_ 物理并发重叠：Vector 计算 Softmax rowSum 并更新 L 与 O
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
-    ReduceSum(sumLocal[i], sLocal[i * tilingData_.B_k], reduceLocal,
+    ReduceSum(sumLocal[i], pLocal[i * tilingData_.B_k], reduceLocal,
               tilingData_.B_k);
   }
 
   LocalTensor<half> l = L.Get<half>();
   LocalTensor<half> o = O.Get<half>();
   Mul(l, scaleLocal, l, tilingData_.B_q);
+  PipeBarrier<PIPE_V>();
   Add(l, l, sumLocal, tilingData_.B_q);
 
-  PipeBarrier<PIPE_V>();
+  // PipeBarrier<PIPE_V>(); DON'T NEED
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
     half scl = scaleLocal.GetValue(i);
     Muls(o[i * tilingData_.d], o[i * tilingData_.d], scl, tilingData_.d);
   }
 
-  // 2. 下发 P @ V -> pvRes (Cube后台运行)
-  LocalTensor<half> pvRes = pvResBuf_.Get<half>();
-  LocalTensor<uint8_t> mmWsPV = mmWsPVBuf_.Get<uint8_t>();
-  PipeBarrier<PIPE_ALL>();
-  mmPV_.SetLocalWorkspace(mmWsPV);
-  mmPV_.SetTensorA(sLocal, false);
-  mmPV_.SetTensorB(vGm_[offsetV], false);
-  mmPV_.Iterate();
-
   // 3. 等待并取出 pvRes，累加到 o
   mmPV_.GetTensorC(pvRes);
-  PipeBarrier<PIPE_ALL>();
-  Add(o, o, pvRes, tilingData_.B_q * tilingData_.d);
-  PipeBarrier<PIPE_ALL>();
+  pvResQue_.EnQue(pvRes);
+  LocalTensor<half> pvLocal = pvResQue_.DeQue<half>();
+  Add(o, o, pvLocal, tilingData_.B_q * tilingData_.d);
+  pvResQue_.FreeTensor(pvLocal);
 }
 
 extern "C" __global__ __aicore__ void
