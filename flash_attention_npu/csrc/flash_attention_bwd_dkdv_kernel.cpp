@@ -67,6 +67,8 @@ private:
   TQue<TPosition::VECIN, 1> tmpMmResQue_;
   TQue<TPosition::VECIN, 1> dpQue_;
   TQue<TPosition::VECIN, 1> sQue_;
+  TQue<TPosition::VECIN, 1> pQue_;
+  TQue<TPosition::VECIN, 1> dsQue_;
   TBuf<TPosition::VECCALC> mmWs1Buf_;
   TBuf<TPosition::VECCALC> mmWs2Buf_;
   TQue<TPosition::VECIN, FLASH_QUEUE_DEPTH> lQue_;
@@ -78,9 +80,7 @@ private:
   uint32_t batchNum_;
   uint32_t batchOffset_;
 
-  static constexpr event_t EVENT_VM_ID = EVENT_ID0;
   static constexpr event_t EVENT_V_MTE3_ID = EVENT_ID0;
-  static constexpr event_t EVENT_MTE3_V_ID = EVENT_ID0;
 };
 
 __aicore__ inline void
@@ -124,6 +124,8 @@ FlashAttentionBwd_dKdV_Kernel::Init(GM_ADDR Q, GM_ADDR O, GM_ADDR dO, GM_ADDR K,
   pipe_.InitBuffer(dkBuf_, tilingData_.B_k * tilingData_.d * sizeof(half));
   pipe_.InitBuffer(dvBuf_, tilingData_.B_k * tilingData_.d * sizeof(half));
   pipe_.InitBuffer(sQue_, 1, tilingData_.B_q * tilingData_.B_k * sizeof(half));
+  pipe_.InitBuffer(pQue_, 1, tilingData_.B_q * tilingData_.B_k * sizeof(half));
+  pipe_.InitBuffer(dsQue_, 1, tilingData_.B_q * tilingData_.B_k * sizeof(half));
   pipe_.InitBuffer(tmpMmResQue_, 1,
                    tilingData_.B_k * tilingData_.d * sizeof(half));
   pipe_.InitBuffer(dpQue_, 1, tilingData_.B_q * tilingData_.B_k * sizeof(half));
@@ -166,6 +168,7 @@ __aicore__ inline void FlashAttentionBwd_dKdV_Kernel::Process() {
     WaitFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
     DataCopy(dkGm_[offsetKV], dk, tilingData_.B_k * tilingData_.d);
     DataCopy(dvGm_[offsetKV], dv, tilingData_.B_k * tilingData_.d);
+    PipeBarrier<PIPE_ALL>();
   }
 }
 
@@ -230,17 +233,19 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
          static_cast<half>(-static_cast<float>(l)), tilingData_.B_k);
   }
   lQue_.FreeTensor(lLocal);
-  Exp(sLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
+  LocalTensor<half> pLocal = pQue_.AllocTensor<half>();
+  Exp(pLocal, sLocal, tilingData_.B_q * tilingData_.B_k);
+  sQue_.FreeTensor(sLocal);
+  pQue_.EnQue(pLocal);
 
   LocalTensor<half> dpRes = dpQue_.AllocTensor<half>();
   mmdOV_.GetTensorC(dpRes);
   dpQue_.EnQue(dpRes);
 
-  SetFlag<HardEvent::V_M>(EVENT_VM_ID);
-  WaitFlag<HardEvent::V_M>(EVENT_VM_ID);
   // 3. 阶段二异步重叠：Cube 异步计算 P^T @ dO -> dV，Vector 并发计算 dS
+  LocalTensor<half> pCube = pQue_.DeQue<half>();
   mmPdO_.SetLocalWorkspace(mmWs1);
-  mmPdO_.SetTensorA(sLocal, true);
+  mmPdO_.SetTensorA(pCube, true);
   mmPdO_.SetTensorB(doGm_[offset2D], false);
   mmPdO_.Iterate();
 
@@ -253,32 +258,34 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
          static_cast<half>(-static_cast<float>(d)), tilingData_.B_k);
   }
   dQue_.FreeTensor(dLocal);
-  Mul(dpLocal, sLocal, dpLocal, tilingData_.B_q * tilingData_.B_k);
-  sQue_.FreeTensor(sLocal);
+
+  LocalTensor<half> dsLocal = dsQue_.AllocTensor<half>();
+  Mul(dpLocal, pCube, dpLocal, tilingData_.B_q * tilingData_.B_k);
   PipeBarrier<PIPE_V>();
-  Muls(dpLocal, dpLocal, static_cast<half>(tilingData_.scale),
+  Muls(dsLocal, dpLocal, static_cast<half>(tilingData_.scale),
        tilingData_.B_q * tilingData_.B_k);
+  dpQue_.FreeTensor(dpLocal);
+  dsQue_.EnQue(dsLocal);
 
   LocalTensor<half> tmpMmRes = tmpMmResQue_.AllocTensor<half>();
   mmPdO_.GetTensorC(tmpMmRes);
+  pQue_.FreeTensor(pCube);
   tmpMmResQue_.EnQue(tmpMmRes);
   LocalTensor<half> tmpMmLocal = tmpMmResQue_.DeQue<half>();
-  SetFlag<HardEvent::MTE3_V>(EVENT_MTE3_V_ID);
-  WaitFlag<HardEvent::MTE3_V>(EVENT_MTE3_V_ID);
+
   Add(dvLocal, dvLocal, tmpMmLocal, tilingData_.d * tilingData_.B_k);
   tmpMmResQue_.FreeTensor(tmpMmLocal);
 
   // 4. 计算 dS^T @ Q -> dK
-  SetFlag<HardEvent::V_M>(EVENT_VM_ID);
-  WaitFlag<HardEvent::V_M>(EVENT_VM_ID);
+  LocalTensor<half> dsCube = dsQue_.DeQue<half>();
   mmPdO_.SetLocalWorkspace(mmWs1);
-  mmPdO_.SetTensorA(dpLocal, true);
+  mmPdO_.SetTensorA(dsCube, true);
   mmPdO_.SetTensorB(qGm_[offset2D], false);
   mmPdO_.Iterate();
   LocalTensor<half> tmpMmRes2 = tmpMmResQue_.AllocTensor<half>();
   mmPdO_.GetTensorC(tmpMmRes2);
+  dsQue_.FreeTensor(dsCube);
   tmpMmResQue_.EnQue(tmpMmRes2);
-  dpQue_.FreeTensor(dpLocal);
   LocalTensor<half> tmpMmLocal2 = tmpMmResQue_.DeQue<half>();
   Add(dkLocal, dkLocal, tmpMmLocal2, tilingData_.d * tilingData_.B_k);
   tmpMmResQue_.FreeTensor(tmpMmLocal2);

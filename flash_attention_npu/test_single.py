@@ -1,4 +1,5 @@
 import os
+os.environ["TE_PARALLEL_COMPILER"] = "1"
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
 import sys
