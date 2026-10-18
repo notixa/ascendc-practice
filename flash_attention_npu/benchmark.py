@@ -1,4 +1,5 @@
 import os
+os.environ["TE_PARALLEL_COMPILER"] = "1"
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
@@ -216,10 +217,10 @@ def benchmark_shape(N_q, N_k, d, primary_baseline_key, warmup=10, iters=30, incl
     device = "npu:0" if HAS_NPU else "cpu"
     scale = 1.0 / (d ** 0.5)
 
-    q = torch.randn((N_q, d), dtype=torch.half, device=device)
-    k = torch.randn((N_k, d), dtype=torch.half, device=device)
-    v = torch.randn((N_k, d), dtype=torch.half, device=device)
-    do = torch.randn((N_q, d), dtype=torch.half, device=device)
+    q = torch.randn((N_q, d), dtype=torch.half).to(device)
+    k = torch.randn((N_k, d), dtype=torch.half).to(device)
+    v = torch.randn((N_k, d), dtype=torch.half).to(device)
+    do = torch.randn((N_q, d), dtype=torch.half).to(device)
 
     # 1. 自定义 Ascend C FlashAttention 耗时
     custom_fwd_fn = lambda: flash_attention_npu.forward(q, k, v, scale)
