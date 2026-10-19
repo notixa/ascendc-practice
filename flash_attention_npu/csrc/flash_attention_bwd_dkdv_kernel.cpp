@@ -320,6 +320,7 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
   LocalTensor<half> tmpMmLocal2 = tmpMmResQue_.DeQue<half>();
   Add(dkLocal, dkLocal, tmpMmLocal2, tilingData_.d * tilingData_.B_k);
   tmpMmResQue_.FreeTensor(tmpMmLocal2);
+  PipeBarrier<PIPE_ALL>();
 }
 
 extern "C" __global__ __aicore__ void

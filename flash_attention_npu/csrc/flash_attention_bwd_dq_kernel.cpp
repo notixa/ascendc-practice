@@ -268,6 +268,7 @@ FlashAttentionBwd_dQ_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetQ, ui
 
   Add(dqLocal, dqLocal, tmpMmLocal, tilingData_.d * tilingData_.B_q);
   tmpMmResQue_.FreeTensor(tmpMmLocal);
+  PipeBarrier<PIPE_ALL>();
 }
 
 extern "C" __global__ __aicore__ void
