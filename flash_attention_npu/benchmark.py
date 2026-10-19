@@ -273,23 +273,14 @@ def benchmark_shape(N_q, N_k, d, heads, primary_baseline_key, warmup=5, iters=15
         v = torch.randn((N_k, d), dtype=torch.half).to(device)
         do = torch.randn((N_q, d), dtype=torch.half).to(device)
     else:
-        q_list = [torch.randn((N_q, d), dtype=torch.half).to(device) for _ in range(heads)]
-        k_list = [torch.randn((N_k, d), dtype=torch.half).to(device) for _ in range(heads)]
-        v_list = [torch.randn((N_k, d), dtype=torch.half).to(device) for _ in range(heads)]
-        do_list = [torch.randn((N_q, d), dtype=torch.half).to(device) for _ in range(heads)]
-        q = torch.stack(q_list, dim=0)
-        k = torch.stack(k_list, dim=0)
-        v = torch.stack(v_list, dim=0)
-        do = torch.stack(do_list, dim=0)
-        if HAS_NPU:
-            torch.npu.synchronize()
+        q = torch.randn((heads, N_q, d), dtype=torch.half).to(device)
+        k = torch.randn((heads, N_k, d), dtype=torch.half).to(device)
+        v = torch.randn((heads, N_k, d), dtype=torch.half).to(device)
+        do = torch.randn((heads, N_q, d), dtype=torch.half).to(device)
+    if HAS_NPU:
+        torch.npu.synchronize()
 
-        def custom_fwd_multihead():
-            outs = []
-            for i in range(heads):
-                outs.append(flash_attention_npu.forward(q_list[i], k_list[i], v_list[i], scale))
-            return outs
-        custom_fwd_fn = custom_fwd_multihead
+    custom_fwd_fn = lambda: flash_attention_npu.forward(q, k, v, scale)
 
     custom_fwd_stat = measure_latency_ms(custom_fwd_fn, warmup=warmup, iters=iters)
     custom_fwd_ms = custom_fwd_stat["median"]
@@ -338,23 +329,10 @@ def benchmark_shape(N_q, N_k, d, heads, primary_baseline_key, warmup=5, iters=15
 
     # 4. 反向评测 (可选)
     if include_bwd:
-        if heads == 1:
-            o_c, l_c = flash_attention_npu.forward(q, k, v, scale)
-            custom_bwd_fn = lambda: flash_attention_npu.backward(do, q, k, v, o_c, l_c, scale)
-        else:
-            fwd_outs = []
-            for i in range(heads):
-                fwd_outs.append(flash_attention_npu.forward(q_list[i], k_list[i], v_list[i], scale))
-            if HAS_NPU:
-                torch.npu.synchronize()
-
-            def custom_bwd_multihead():
-                grads = []
-                for i in range(heads):
-                    o_i, l_i = fwd_outs[i]
-                    grads.append(flash_attention_npu.backward(do_list[i], q_list[i], k_list[i], v_list[i], o_i, l_i, scale))
-                return grads
-            custom_bwd_fn = custom_bwd_multihead
+        o_c, l_c = flash_attention_npu.forward(q, k, v, scale)
+        if HAS_NPU:
+            torch.npu.synchronize()
+        custom_bwd_fn = lambda: flash_attention_npu.backward(do, q, k, v, o_c, l_c, scale)
 
         custom_bwd_stat = measure_latency_ms(custom_bwd_fn, warmup=warmup, iters=iters)
         custom_bwd_ms = custom_bwd_stat["median"]

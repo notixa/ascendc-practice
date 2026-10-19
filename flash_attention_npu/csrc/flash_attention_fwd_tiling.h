@@ -82,6 +82,7 @@ struct FlashAttentionFwdTilingData {
   uint32_t B_q;
   uint32_t B_k;
   float scale;
+  uint32_t batchSize;
 };
 #pragma pack(pop)
 
@@ -95,10 +96,12 @@ inline uint32_t AlignUp(uint32_t val, uint32_t alignment) {
  */
 inline void ComputeFlashAttentionFwdTiling(
     uint32_t N_q, uint32_t N_k, uint32_t d, uint32_t targetCoreNum,
-    FlashAttentionFwdTilingData &tilingData, float customScale = 0.0f) {
+    FlashAttentionFwdTilingData &tilingData, float customScale = 0.0f,
+    uint32_t batchSize = 1) {
   tilingData.N_q = N_q;
   tilingData.N_k = N_k;
   tilingData.d = d;
+  tilingData.batchSize = batchSize;
 
   // 默认 Tile 分块大小 B_q = 64, B_k = 64
   uint32_t B_q = 64;

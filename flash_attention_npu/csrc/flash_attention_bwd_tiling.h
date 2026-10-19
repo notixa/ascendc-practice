@@ -84,6 +84,7 @@ struct FlashAttentionBwd_dKdV_TilingData {
   uint32_t B_q;
   uint32_t B_k;
   float scale;
+  uint32_t batchSize;
 };
 #pragma pack(pop)
 
@@ -101,6 +102,7 @@ struct FlashAttentionBwd_dQ_TilingData {
   uint32_t B_q;
   uint32_t B_k;
   float scale;
+  uint32_t batchSize;
 };
 #pragma pack(pop)
 
@@ -133,10 +135,12 @@ inline void InitMatmulTCubeTilingBwd(TCubeTiling &t, int32_t M, int32_t N, int32
 
 inline void ComputeFlashAttentionBwd_dKdV_Tiling(
     uint32_t N_q, uint32_t N_k, uint32_t d, uint32_t targetCoreNum,
-    FlashAttentionBwd_dKdV_TilingData &tilingData, float customScale = 0.0f) {
+    FlashAttentionBwd_dKdV_TilingData &tilingData, float customScale = 0.0f,
+    uint32_t batchSize = 1) {
   tilingData.N_q = N_q;
   tilingData.N_k = N_k;
   tilingData.d = d;
+  tilingData.batchSize = batchSize;
 
   uint32_t B_q = 64;
   uint32_t B_k = 64;
@@ -170,10 +174,12 @@ inline void ComputeFlashAttentionBwd_dKdV_Tiling(
 
 inline void ComputeFlashAttentionBwd_dQ_Tiling(
     uint32_t N_q, uint32_t N_k, uint32_t d, uint32_t targetCoreNum,
-    FlashAttentionBwd_dQ_TilingData &tilingData, float customScale = 0.0f) {
+    FlashAttentionBwd_dQ_TilingData &tilingData, float customScale = 0.0f,
+    uint32_t batchSize = 1) {
   tilingData.N_q = N_q;
   tilingData.N_k = N_k;
   tilingData.d = d;
+  tilingData.batchSize = batchSize;
 
   uint32_t B_q = 64;
   uint32_t B_k = 64;

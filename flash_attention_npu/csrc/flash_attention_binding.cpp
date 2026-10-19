@@ -50,20 +50,32 @@ std::vector<at::Tensor> flash_attention_forward(
     TORCH_CHECK(k.scalar_type() == at::kHalf, "Input K must be Half (FP16)");
     TORCH_CHECK(v.scalar_type() == at::kHalf, "Input V must be Half (FP16)");
 
-    TORCH_CHECK(q.dim() == 2, "Input Q must be 2D [N_q, d]");
-    TORCH_CHECK(k.dim() == 2, "Input K must be 2D [N_k, d]");
-    TORCH_CHECK(v.dim() == 2, "Input V must be 2D [N_k, d]");
+    TORCH_CHECK(q.dim() >= 2 && q.dim() <= 4, "Input Q must be 2D [N_q, d], 3D [H, N_q, d] or 4D [B, H, N_q, d]");
+    TORCH_CHECK(k.dim() == q.dim(), "Input K dimension must match Q dimension");
+    TORCH_CHECK(v.dim() == q.dim(), "Input V dimension must match Q dimension");
+
+    uint32_t batchSize = 1;
+    if (q.dim() == 3) {
+        batchSize = static_cast<uint32_t>(q.size(0));
+        TORCH_CHECK(k.size(0) == batchSize && v.size(0) == batchSize,
+                    "Batch/Head size mismatch between Q, K, V");
+    } else if (q.dim() == 4) {
+        batchSize = static_cast<uint32_t>(q.size(0) * q.size(1));
+        TORCH_CHECK(k.size(0) == q.size(0) && k.size(1) == q.size(1) &&
+                    v.size(0) == q.size(0) && v.size(1) == q.size(1),
+                    "Batch/Head shape mismatch between Q, K, V");
+    }
 
     auto q_contig = q.contiguous();
     auto k_contig = k.contiguous();
     auto v_contig = v.contiguous();
 
-    uint32_t N_q = static_cast<uint32_t>(q_contig.size(0));
-    uint32_t d   = static_cast<uint32_t>(q_contig.size(1));
-    uint32_t N_k = static_cast<uint32_t>(k_contig.size(0));
-    uint32_t d_k = static_cast<uint32_t>(k_contig.size(1));
-    uint32_t N_v = static_cast<uint32_t>(v_contig.size(0));
-    uint32_t d_v = static_cast<uint32_t>(v_contig.size(1));
+    uint32_t N_q = static_cast<uint32_t>(q_contig.size(-2));
+    uint32_t d   = static_cast<uint32_t>(q_contig.size(-1));
+    uint32_t N_k = static_cast<uint32_t>(k_contig.size(-2));
+    uint32_t d_k = static_cast<uint32_t>(k_contig.size(-1));
+    uint32_t N_v = static_cast<uint32_t>(v_contig.size(-2));
+    uint32_t d_v = static_cast<uint32_t>(v_contig.size(-1));
 
     TORCH_CHECK(d == d_k && d == d_v, "Feature dimension d mismatch: Q has ", d,
                 ", K has ", d_k, ", V has ", d_v);
@@ -71,14 +83,15 @@ std::vector<at::Tensor> flash_attention_forward(
     TORCH_CHECK(N_q % 16 == 0 && N_k % 16 == 0 && d % 16 == 0,
                 "N_q, N_k, and d must be multiples of 16 for Ascend C alignment");
 
-    auto o = at::empty({static_cast<int64_t>(N_q), static_cast<int64_t>(d)}, q_contig.options());
-    auto l = at::empty({static_cast<int64_t>(N_q)}, q_contig.options());
+    auto o = at::empty(q_contig.sizes(), q_contig.options());
+    std::vector<int64_t> l_shape(q_contig.sizes().begin(), q_contig.sizes().end() - 1);
+    auto l = at::empty(l_shape, q_contig.options());
 
     // 1. 计算 FlashAttention Tiling
     FlashAttentionFwdTilingData tilingData;
     float scale_val = static_cast<float>(scale);
-    uint32_t targetCoreNum = 1; // 310B1 默认单核或多核调度
-    ComputeFlashAttentionFwdTiling(N_q, N_k, d, targetCoreNum, tilingData, scale_val);
+    uint32_t targetCoreNum = 1; // 310B1 默认单核调度，单核内原生处理多头
+    ComputeFlashAttentionFwdTiling(N_q, N_k, d, targetCoreNum, tilingData, scale_val, batchSize);
 
     uint32_t blockDim = tilingData.coreNum;
 
@@ -179,11 +192,29 @@ std::vector<at::Tensor> flash_attention_backward(
     TORCH_CHECK(o.scalar_type() == at::kHalf, "Input O must be Half (FP16)");
     TORCH_CHECK(l.scalar_type() == at::kHalf, "Input L must be Half (FP16)");
 
-    TORCH_CHECK(do_grad.dim() == 2, "Input do_grad must be 2D [N_q, d]");
-    TORCH_CHECK(q.dim() == 2, "Input Q must be 2D [N_q, d]");
-    TORCH_CHECK(k.dim() == 2, "Input K must be 2D [N_k, d]");
-    TORCH_CHECK(v.dim() == 2, "Input V must be 2D [N_k, d]");
-    TORCH_CHECK(o.dim() == 2, "Input O must be 2D [N_q, d]");
+    TORCH_CHECK(q.dim() >= 2 && q.dim() <= 4, "Input Q must be 2D [N_q, d], 3D [H, N_q, d] or 4D [B, H, N_q, d]");
+    TORCH_CHECK(do_grad.dim() == q.dim(), "Input do_grad dim mismatch with Q");
+    TORCH_CHECK(k.dim() == q.dim(), "Input K dim mismatch with Q");
+    TORCH_CHECK(v.dim() == q.dim(), "Input V dim mismatch with Q");
+    TORCH_CHECK(o.dim() == q.dim(), "Input O dim mismatch with Q");
+    TORCH_CHECK(l.dim() == q.dim() - 1, "Input L dim mismatch with Q");
+
+    uint32_t batchSize = 1;
+    if (q.dim() == 3) {
+        batchSize = static_cast<uint32_t>(q.size(0));
+        TORCH_CHECK(k.size(0) == batchSize && v.size(0) == batchSize &&
+                    o.size(0) == batchSize && do_grad.size(0) == batchSize &&
+                    l.size(0) == batchSize,
+                    "Head dimension mismatch across backward inputs");
+    } else if (q.dim() == 4) {
+        batchSize = static_cast<uint32_t>(q.size(0) * q.size(1));
+        TORCH_CHECK(k.size(0) == q.size(0) && k.size(1) == q.size(1) &&
+                    v.size(0) == q.size(0) && v.size(1) == q.size(1) &&
+                    o.size(0) == q.size(0) && o.size(1) == q.size(1) &&
+                    do_grad.size(0) == q.size(0) && do_grad.size(1) == q.size(1) &&
+                    l.size(0) == q.size(0) && l.size(1) == q.size(1),
+                    "Batch/Head dimension mismatch across backward inputs");
+    }
 
     auto q_contig  = q.contiguous();
     auto k_contig  = k.contiguous();
@@ -192,22 +223,22 @@ std::vector<at::Tensor> flash_attention_backward(
     auto do_contig = do_grad.contiguous();
     auto l_contig  = l.contiguous();
 
-    uint32_t N_q = static_cast<uint32_t>(q_contig.size(0));
-    uint32_t d   = static_cast<uint32_t>(q_contig.size(1));
-    uint32_t N_k = static_cast<uint32_t>(k_contig.size(0));
-    uint32_t d_k = static_cast<uint32_t>(k_contig.size(1));
-    uint32_t N_v = static_cast<uint32_t>(v_contig.size(0));
-    uint32_t d_v = static_cast<uint32_t>(v_contig.size(1));
+    uint32_t N_q = static_cast<uint32_t>(q_contig.size(-2));
+    uint32_t d   = static_cast<uint32_t>(q_contig.size(-1));
+    uint32_t N_k = static_cast<uint32_t>(k_contig.size(-2));
+    uint32_t d_k = static_cast<uint32_t>(k_contig.size(-1));
+    uint32_t N_v = static_cast<uint32_t>(v_contig.size(-2));
+    uint32_t d_v = static_cast<uint32_t>(v_contig.size(-1));
 
     TORCH_CHECK(d == d_k && d == d_v, "Feature dimension d mismatch: Q has ", d,
                 ", K has ", d_k, ", V has ", d_v);
     TORCH_CHECK(N_k == N_v, "Sequence length mismatch: K has ", N_k, ", V has ", N_v);
-    TORCH_CHECK(o_contig.size(0) == N_q && o_contig.size(1) == d,
-                "O shape mismatch: expected [", N_q, ", ", d, "]");
-    TORCH_CHECK(do_contig.size(0) == N_q && do_contig.size(1) == d,
-                "do_grad shape mismatch: expected [", N_q, ", ", d, "]");
-    TORCH_CHECK(l_contig.numel() == static_cast<int64_t>(N_q),
-                "L numel mismatch: expected ", N_q, ", got ", l_contig.numel());
+    TORCH_CHECK(o_contig.size(-2) == N_q && o_contig.size(-1) == d,
+                "O shape mismatch: expected [..., ", N_q, ", ", d, "]");
+    TORCH_CHECK(do_contig.size(-2) == N_q && do_contig.size(-1) == d,
+                "do_grad shape mismatch: expected [..., ", N_q, ", ", d, "]");
+    TORCH_CHECK(l_contig.numel() == static_cast<int64_t>(batchSize * N_q),
+                "L numel mismatch: expected ", batchSize * N_q, ", got ", l_contig.numel());
     TORCH_CHECK(N_q % 16 == 0 && N_k % 16 == 0 && d % 16 == 0,
                 "N_q, N_k, and d must be multiples of 16 for Ascend C alignment");
 
@@ -223,9 +254,9 @@ std::vector<at::Tensor> flash_attention_backward(
     d_tensor = (do_contig.to(at::kFloat) * o_contig.to(at::kFloat)).sum(-1).to(at::kHalf).contiguous();
 #endif
 
-    auto dq = at::empty({static_cast<int64_t>(N_q), static_cast<int64_t>(d)}, q_contig.options());
-    auto dk = at::empty({static_cast<int64_t>(N_k), static_cast<int64_t>(d)}, k_contig.options());
-    auto dv = at::empty({static_cast<int64_t>(N_k), static_cast<int64_t>(d)}, v_contig.options());
+    auto dq = at::empty(q_contig.sizes(), q_contig.options());
+    auto dk = at::empty(k_contig.sizes(), k_contig.options());
+    auto dv = at::empty(v_contig.sizes(), v_contig.options());
 
     // 1. 计算 FlashAttention Backward Tiling
     FlashAttentionBwd_dKdV_TilingData tilingData_dkdv;
@@ -233,8 +264,8 @@ std::vector<at::Tensor> flash_attention_backward(
     float scale_val = static_cast<float>(scale);
     uint32_t targetCoreNum = 1;
 
-    ComputeFlashAttentionBwd_dKdV_Tiling(N_q, N_k, d, targetCoreNum, tilingData_dkdv, scale_val);
-    ComputeFlashAttentionBwd_dQ_Tiling(N_q, N_k, d, targetCoreNum, tilingData_dq, scale_val);
+    ComputeFlashAttentionBwd_dKdV_Tiling(N_q, N_k, d, targetCoreNum, tilingData_dkdv, scale_val, batchSize);
+    ComputeFlashAttentionBwd_dQ_Tiling(N_q, N_k, d, targetCoreNum, tilingData_dq, scale_val, batchSize);
 
     uint32_t blockDim_dkdv = tilingData_dkdv.coreNum;
     uint32_t blockDim_dq   = tilingData_dq.coreNum;
