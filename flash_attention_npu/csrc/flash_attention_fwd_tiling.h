@@ -103,10 +103,10 @@ inline void ComputeFlashAttentionFwdTiling(
   tilingData.d = d;
   tilingData.batchSize = batchSize;
 
-  // 默认 Tile 分块大小 B_q = 64, B_k = 64
-  uint32_t B_q = 64;
+  // 扩展 Tile 分块大小: B_q = 128 (若 N_q >= 128), B_k = 64
+  uint32_t B_q = 128;
   uint32_t B_k = 64;
-  if (N_q < 64) {
+  if (N_q < 128) {
     B_q = AlignUp(N_q, 16);
   }
   if (N_k < 64) {
@@ -141,7 +141,7 @@ inline void ComputeFlashAttentionFwdTiling(
   qk.singleCoreK = d;
   qk.baseM = B_q;
   qk.baseN = B_k;
-  qk.baseK = (d < 64) ? AlignUp(d, 16) : 64;
+  qk.baseK = d;
   qk.stepM = 1;
   qk.stepN = 1;
   qk.stepKa = 1;
@@ -160,11 +160,11 @@ inline void ComputeFlashAttentionFwdTiling(
   pv.Ka = B_k;
   pv.Kb = B_k;
   pv.singleCoreM = B_q;
-  pv.singleCoreN = (d < 64) ? AlignUp(d, 16) : 64;
+  pv.singleCoreN = d;
   pv.singleCoreK = B_k;
   pv.baseM = B_q;
-  pv.baseN = (d < 64) ? AlignUp(d, 16) : 64;
-  pv.baseK = (B_k < 64) ? AlignUp(B_k, 16) : 64;
+  pv.baseN = d;
+  pv.baseK = B_k;
   pv.stepM = 1;
   pv.stepN = 1;
   pv.stepKa = 1;

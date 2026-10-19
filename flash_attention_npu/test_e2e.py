@@ -149,6 +149,8 @@ def test_shape_multihead(heads, N_q, N_k, d):
     print(f"Forward ({t_fwd:.2f} ms total, {t_fwd/heads:.2f} ms/head):")
     print(f"  O shape: {list(o_c.shape)}, max diff: {diff_o.max().item():.5f}, mean: {diff_o.mean().item():.5f}")
     print(f"  L shape: {list(l_c.shape)}, max diff: {diff_l.max().item():.5f}, mean: {diff_l.mean().item():.5f}")
+    for h in range(heads):
+        print(f"    Head {h}: O diff = {diff_o[h].max().item():.5f}, L diff = {diff_l[h].max().item():.5f}")
 
     # 4. Test Native Multi-Head Backward
     t0 = time.time()

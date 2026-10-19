@@ -121,7 +121,7 @@ inline void InitMatmulTCubeTilingBwd(TCubeTiling &t, int32_t M, int32_t N, int32
   t.singleCoreK = Ka;
   t.baseM = M;
   t.baseN = N;
-  t.baseK = (Ka < 64) ? AlignUpBwd(Ka, 16) : 64;
+  t.baseK = Ka;
   t.stepM = 1;
   t.stepN = 1;
   t.stepKa = 1;
@@ -142,9 +142,10 @@ inline void ComputeFlashAttentionBwd_dKdV_Tiling(
   tilingData.d = d;
   tilingData.batchSize = batchSize;
 
-  uint32_t B_q = 64;
+  // 扩展 Tile 分块大小: B_q = 128 (若 N_q >= 128), B_k = 64
+  uint32_t B_q = 128;
   uint32_t B_k = 64;
-  if (N_q < 64) {
+  if (N_q < 128) {
     B_q = AlignUpBwd(N_q, 16);
   }
   if (N_k < 64) {
@@ -181,9 +182,10 @@ inline void ComputeFlashAttentionBwd_dQ_Tiling(
   tilingData.d = d;
   tilingData.batchSize = batchSize;
 
-  uint32_t B_q = 64;
+  // 扩展 Tile 分块大小: B_q = 128 (若 N_q >= 128), B_k = 64
+  uint32_t B_q = 128;
   uint32_t B_k = 64;
-  if (N_q < 64) {
+  if (N_q < 128) {
     B_q = AlignUpBwd(N_q, 16);
   }
   if (N_k < 64) {
