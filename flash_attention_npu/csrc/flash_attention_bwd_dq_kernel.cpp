@@ -159,9 +159,8 @@ __aicore__ inline void FlashAttentionBwd_dQ_Kernel::Process() {
       InnerCycle(i, offsetQ);
     }
     uint64_t offset = (batchOffset_ + batch) * tilingData_.d * tilingData_.B_q;
+    PipeBarrier<PIPE_ALL>();
     LocalTensor<half> dq = dqBuf_.Get<half>();
-    SetFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
-    WaitFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
     DataCopy(dqGm_[offset], dq, tilingData_.B_q * tilingData_.d);
     PipeBarrier<PIPE_ALL>();
   }

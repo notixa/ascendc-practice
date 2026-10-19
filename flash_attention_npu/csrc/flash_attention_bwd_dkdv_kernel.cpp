@@ -179,10 +179,9 @@ __aicore__ inline void FlashAttentionBwd_dKdV_Kernel::Process() {
     for (uint32_t i = 0; i < T_q; ++i) {
       InnerCycle(i, offsetKV);
     }
+    PipeBarrier<PIPE_ALL>();
     LocalTensor<half> dk = dkBuf_.Get<half>();
     LocalTensor<half> dv = dvBuf_.Get<half>();
-    SetFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
-    WaitFlag<HardEvent::V_MTE3>(EVENT_V_MTE3_ID);
     DataCopy(dkGm_[offsetKV], dk, tilingData_.B_k * tilingData_.d);
     DataCopy(dvGm_[offsetKV], dv, tilingData_.B_k * tilingData_.d);
     PipeBarrier<PIPE_ALL>();
@@ -259,13 +258,8 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
   mmdOV_.GetTensorC(dpRes);
   dpQue_.EnQue(dpRes);
 
-  // 3. 阶段二异步重叠：Cube 异步计算 P^T @ dO -> dV，Vector 并发计算 dS
+  // 3. Vector 先读取 pCube 并计算 dS，彻底避免与 mmPdO_ (MTE1) 产生片上 UB 总线读写冲突
   LocalTensor<half> pCube = pQue_.DeQue<half>();
-  mmPdO_.SetLocalWorkspace(mmWs3);
-  mmPdO_.SetTensorA(pCube, true);
-  mmPdO_.SetTensorB(doGm_[offset2D], false);
-  mmPdO_.Iterate();
-
   LocalTensor<half> dLocal = dBuf_.Get<half>();
   LocalTensor<half> dpLocal = dpQue_.DeQue<half>();
   for (uint32_t r = 0; r < tilingData_.B_q; r++) {
@@ -282,6 +276,14 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
        tilingData_.B_q * tilingData_.B_k);
   dpQue_.FreeTensor(dpLocal);
   dsQue_.EnQue(dsLocal);
+
+  PipeBarrier<PIPE_ALL>();
+
+  // 4. Vector 计算完毕后，安全下发 P^T @ dO -> dV (Cube)
+  mmPdO_.SetLocalWorkspace(mmWs3);
+  mmPdO_.SetTensorA(pCube, true);
+  mmPdO_.SetTensorB(doGm_[offset2D], false);
+  mmPdO_.Iterate();
 
   LocalTensor<half> tmpMmRes = tmpMmResQue_.AllocTensor<half>();
   mmPdO_.GetTensorC(tmpMmRes);

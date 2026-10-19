@@ -12,6 +12,7 @@
 #if __has_include(<torch_npu/csrc/core/npu/NPUStream.h>)
 #include <torch_npu/csrc/core/npu/DeviceUtils.h>
 #include <torch_npu/csrc/core/npu/NPUStream.h>
+#include <torch_npu/csrc/core/npu/NPUCachingAllocator.h>
 #define HAS_TORCH_NPU 1
 #else
 #define HAS_TORCH_NPU 0
@@ -91,17 +92,21 @@ std::vector<at::Tensor> flash_attention_forward(
 
     if (is_device_tensor) {
 #if HAS_TORCH_NPU
-        auto stream = c10_npu::getCurrentNPUStream().stream(true);
+        auto stream_obj = c10_npu::getCurrentNPUStream();
+        auto stream = stream_obj.stream(true);
+        at::Tensor hostTiling = at::from_blob(&tilingData, {static_cast<int64_t>(sizeof(FlashAttentionFwdTilingData))}, at::kByte);
         at::Tensor tilingTensor = at::empty(
             {static_cast<int64_t>(sizeof(FlashAttentionFwdTilingData))},
             q_contig.options().dtype(at::kByte));
-        aclrtMemcpy(tilingTensor.data_ptr(), sizeof(FlashAttentionFwdTilingData),
-                     &tilingData, sizeof(FlashAttentionFwdTilingData),
-                     ACL_MEMCPY_HOST_TO_DEVICE);
+        tilingTensor.copy_(hostTiling, /*non_blocking=*/true);
 
         FlashAttentionFwdKernel_do(blockDim, stream,
                                    q_contig.data_ptr(), k_contig.data_ptr(), v_contig.data_ptr(),
                                    o.data_ptr(), l.data_ptr(), tilingTensor.data_ptr());
+
+        c10_npu::NPUCachingAllocator::recordStream(o.storage().data_ptr(), stream_obj);
+        c10_npu::NPUCachingAllocator::recordStream(l.storage().data_ptr(), stream_obj);
+        c10_npu::NPUCachingAllocator::recordStream(tilingTensor.storage().data_ptr(), stream_obj);
 #endif
     } else {
         // CPU fallback 模式：Host -> Device -> Launch -> Device -> Host
@@ -206,8 +211,17 @@ std::vector<at::Tensor> flash_attention_backward(
     TORCH_CHECK(N_q % 16 == 0 && N_k % 16 == 0 && d % 16 == 0,
                 "N_q, N_k, and d must be multiples of 16 for Ascend C alignment");
 
-    // D = rowsum(dO * O), computed with FP32 intermediate accumulation on CPU for blazing fast execution & no JIT compile overhead
-    auto d_tensor = (do_contig.cpu().to(at::kFloat) * o_contig.cpu().to(at::kFloat)).sum(-1).to(at::kHalf).to(do_contig.device()).contiguous();
+    // D = rowsum(dO * O), 前置融合直接在设备侧计算，彻底消除 Host CPU 拷贝与同步阻塞
+    at::Tensor d_tensor;
+#if HAS_TORCH_NPU
+    if (torch_npu::utils::is_npu(do_contig) && torch_npu::utils::is_npu(o_contig)) {
+        d_tensor = (do_contig * o_contig).sum(-1).contiguous();
+    } else {
+        d_tensor = (do_contig.to(at::kFloat) * o_contig.to(at::kFloat)).sum(-1).to(at::kHalf).contiguous();
+    }
+#else
+    d_tensor = (do_contig.to(at::kFloat) * o_contig.to(at::kFloat)).sum(-1).to(at::kHalf).contiguous();
+#endif
 
     auto dq = at::empty({static_cast<int64_t>(N_q), static_cast<int64_t>(d)}, q_contig.options());
     auto dk = at::empty({static_cast<int64_t>(N_k), static_cast<int64_t>(d)}, k_contig.options());
@@ -237,21 +251,20 @@ std::vector<at::Tensor> flash_attention_backward(
 
     if (is_device_tensor) {
 #if HAS_TORCH_NPU
-        auto stream = c10_npu::getCurrentNPUStream().stream(true);
+        auto stream_obj = c10_npu::getCurrentNPUStream();
+        auto stream = stream_obj.stream(true);
 
+        at::Tensor hostTiling_dkdv = at::from_blob(&tilingData_dkdv, {static_cast<int64_t>(sizeof(FlashAttentionBwd_dKdV_TilingData))}, at::kByte);
         at::Tensor tilingTensor_dkdv = at::empty(
             {static_cast<int64_t>(sizeof(FlashAttentionBwd_dKdV_TilingData))},
             q_contig.options().dtype(at::kByte));
-        aclrtMemcpy(tilingTensor_dkdv.data_ptr(), sizeof(FlashAttentionBwd_dKdV_TilingData),
-                     &tilingData_dkdv, sizeof(FlashAttentionBwd_dKdV_TilingData),
-                     ACL_MEMCPY_HOST_TO_DEVICE);
+        tilingTensor_dkdv.copy_(hostTiling_dkdv, /*non_blocking=*/true);
 
+        at::Tensor hostTiling_dq = at::from_blob(&tilingData_dq, {static_cast<int64_t>(sizeof(FlashAttentionBwd_dQ_TilingData))}, at::kByte);
         at::Tensor tilingTensor_dq = at::empty(
             {static_cast<int64_t>(sizeof(FlashAttentionBwd_dQ_TilingData))},
             q_contig.options().dtype(at::kByte));
-        aclrtMemcpy(tilingTensor_dq.data_ptr(), sizeof(FlashAttentionBwd_dQ_TilingData),
-                     &tilingData_dq, sizeof(FlashAttentionBwd_dQ_TilingData),
-                     ACL_MEMCPY_HOST_TO_DEVICE);
+        tilingTensor_dq.copy_(hostTiling_dq, /*non_blocking=*/true);
 
         if (!getenv("SKIP_DKDV")) {
             FlashAttentionBwd_dKdV_Kernel_do(
@@ -270,6 +283,13 @@ std::vector<at::Tensor> flash_attention_backward(
                 d_tensor.data_ptr(), dq.data_ptr(),
                 tilingTensor_dq.data_ptr());
         }
+
+        c10_npu::NPUCachingAllocator::recordStream(dq.storage().data_ptr(), stream_obj);
+        c10_npu::NPUCachingAllocator::recordStream(dk.storage().data_ptr(), stream_obj);
+        c10_npu::NPUCachingAllocator::recordStream(dv.storage().data_ptr(), stream_obj);
+        c10_npu::NPUCachingAllocator::recordStream(d_tensor.storage().data_ptr(), stream_obj);
+        c10_npu::NPUCachingAllocator::recordStream(tilingTensor_dkdv.storage().data_ptr(), stream_obj);
+        c10_npu::NPUCachingAllocator::recordStream(tilingTensor_dq.storage().data_ptr(), stream_obj);
 #endif
     } else {
         // CPU fallback 模式：Host -> Device -> Launch -> Device -> Host
