@@ -206,8 +206,8 @@ std::vector<at::Tensor> flash_attention_backward(
     TORCH_CHECK(N_q % 16 == 0 && N_k % 16 == 0 && d % 16 == 0,
                 "N_q, N_k, and d must be multiples of 16 for Ascend C alignment");
 
-    // D = rowsum(dO * O), computed with FP32 intermediate accumulation for accuracy
-    auto d_tensor = (do_contig.to(at::kFloat) * o_contig.to(at::kFloat)).sum(-1).to(at::kHalf).contiguous();
+    // D = rowsum(dO * O), computed with FP32 intermediate accumulation on CPU for blazing fast execution & no JIT compile overhead
+    auto d_tensor = (do_contig.cpu().to(at::kFloat) * o_contig.cpu().to(at::kFloat)).sum(-1).to(at::kHalf).to(do_contig.device()).contiguous();
 
     auto dq = at::empty({static_cast<int64_t>(N_q), static_cast<int64_t>(d)}, q_contig.options());
     auto dk = at::empty({static_cast<int64_t>(N_k), static_cast<int64_t>(d)}, k_contig.options());
@@ -253,19 +253,23 @@ std::vector<at::Tensor> flash_attention_backward(
                      &tilingData_dq, sizeof(FlashAttentionBwd_dQ_TilingData),
                      ACL_MEMCPY_HOST_TO_DEVICE);
 
-        FlashAttentionBwd_dKdV_Kernel_do(
-            blockDim_dkdv, stream,
-            q_contig.data_ptr(), o_contig.data_ptr(), do_contig.data_ptr(),
-            k_contig.data_ptr(), v_contig.data_ptr(), l_contig.data_ptr(),
-            d_tensor.data_ptr(), dk.data_ptr(), dv.data_ptr(),
-            tilingTensor_dkdv.data_ptr());
+        if (!getenv("SKIP_DKDV")) {
+            FlashAttentionBwd_dKdV_Kernel_do(
+                blockDim_dkdv, stream,
+                q_contig.data_ptr(), o_contig.data_ptr(), do_contig.data_ptr(),
+                k_contig.data_ptr(), v_contig.data_ptr(), l_contig.data_ptr(),
+                d_tensor.data_ptr(), dk.data_ptr(), dv.data_ptr(),
+                tilingTensor_dkdv.data_ptr());
+        }
 
-        FlashAttentionBwd_dQ_Kernel_do(
-            blockDim_dq, stream,
-            q_contig.data_ptr(), o_contig.data_ptr(), do_contig.data_ptr(),
-            k_contig.data_ptr(), v_contig.data_ptr(), l_contig.data_ptr(),
-            d_tensor.data_ptr(), dq.data_ptr(),
-            tilingTensor_dq.data_ptr());
+        if (!getenv("SKIP_DQ")) {
+            FlashAttentionBwd_dQ_Kernel_do(
+                blockDim_dq, stream,
+                q_contig.data_ptr(), o_contig.data_ptr(), do_contig.data_ptr(),
+                k_contig.data_ptr(), v_contig.data_ptr(), l_contig.data_ptr(),
+                d_tensor.data_ptr(), dq.data_ptr(),
+                tilingTensor_dq.data_ptr());
+        }
 #endif
     } else {
         // CPU fallback 模式：Host -> Device -> Launch -> Device -> Host

@@ -60,6 +60,7 @@ class CustomBuildExtension(BuildExtension):
     def run(self):
         if (CURRENT_DIR / "CMakeLists.txt").exists():
             build_kernel_with_cmake()
+        self.force = True
         for ext in self.extensions:
             ext.extra_objects = [get_kernel_lib()]
         super().run()
