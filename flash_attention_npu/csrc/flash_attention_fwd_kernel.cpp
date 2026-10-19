@@ -67,6 +67,7 @@ private:
   TBuf<TPosition::VECCALC> prevMBuf_;
   TBuf<TPosition::VECCALC> rowMaxBuf_;
   TBuf<TPosition::VECCALC> rowSumBuf_;
+  TBuf<TPosition::VECCALC> invLBuf_;
   TBuf<TPosition::VECCALC> scaleBuf_;
   TBuf<TPosition::VECCALC> reduceBuf_;
   TQue<TPosition::VECIN, 1> pvResQue_;
@@ -116,6 +117,7 @@ __aicore__ inline void FlashAttentionFwdKernel::Init(GM_ADDR Q, GM_ADDR K,
   pipe_.InitBuffer(prevMBuf_, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(rowMaxBuf_, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(rowSumBuf_, tilingData_.B_q * sizeof(half));
+  pipe_.InitBuffer(invLBuf_, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(scaleBuf_, tilingData_.B_q * sizeof(half));
   pipe_.InitBuffer(reduceBuf_, 4096);
   pipe_.InitBuffer(pvResQue_, 1,
@@ -163,21 +165,25 @@ __aicore__ inline void FlashAttentionFwdKernel::Process() {
       LocalTensor<half> l = L.Get<half>();
       LocalTensor<half> m = mBuf_.Get<half>();
       LocalTensor<half> logL = rowSumBuf_.Get<half>();
+      LocalTensor<half> invL = invLBuf_.Get<half>();
 
-      PipeBarrier<PIPE_ALL>();
+      Reciprocal(invL, l, tilingData_.B_q);
+      SetFlag<HardEvent::V_S>(EVENT_ID0);
+      WaitFlag<HardEvent::V_S>(EVENT_ID0);
       for (int32_t i = 0; i < tilingData_.B_q; ++i) {
-        half scale = static_cast<half>(1.0f / static_cast<float>(l.GetValue(i)));
-        Muls(o[i * tilingData_.d], o[i * tilingData_.d], scale, tilingData_.d);
+        Muls(o[i * tilingData_.d], o[i * tilingData_.d], invL.GetValue(i), tilingData_.d);
       }
       Ln(logL, l, tilingData_.B_q);
       PipeBarrier<PIPE_V>();
       Add(l, logL, m, tilingData_.B_q);
       uint64_t offsetO = headOffsetO + (batchOffset_ + batch) * tilingData_.B_q * tilingData_.d;
       uint64_t offsetL = headOffsetL + (batchOffset_ + batch) * tilingData_.B_q;
-      PipeBarrier<PIPE_ALL>();
+      SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
+      WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
       DataCopy(oGm_[offsetO], o, tilingData_.B_q * tilingData_.d);
       DataCopy(lGm_[offsetL], l, tilingData_.B_q);
-      PipeBarrier<PIPE_ALL>();
+      SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+      WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
     }
   }
 }
@@ -228,7 +234,8 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
   PipeBarrier<PIPE_V>();
   Exp(scaleLocal, scaleLocal, tilingData_.B_q);
 
-  PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::V_S>(EVENT_ID0);
+  WaitFlag<HardEvent::V_S>(EVENT_ID0);
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
     half m = mLocal.GetValue(i);
     Adds(sLocal[i * tilingData_.B_k], sLocal[i * tilingData_.B_k],
@@ -254,7 +261,8 @@ __aicore__ inline void FlashAttentionFwdKernel::Compute(uint64_t offsetV) {
   PipeBarrier<PIPE_V>();
   Add(l, l, sumLocal, tilingData_.B_q);
 
-  PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::V_S>(EVENT_ID0);
+  WaitFlag<HardEvent::V_S>(EVENT_ID0);
   for (int32_t i = 0; i < tilingData_.B_q; ++i) {
     half scl = scaleLocal.GetValue(i);
     Muls(o[i * tilingData_.d], o[i * tilingData_.d], scl, tilingData_.d);

@@ -167,10 +167,12 @@ __aicore__ inline void FlashAttentionBwd_dQ_Kernel::Process() {
       for (uint32_t i = 0; i < T_k; ++i) {
         InnerCycle(i, offsetQ, headOffsetKV);
       }
-      PipeBarrier<PIPE_ALL>();
+      SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
+      WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
       LocalTensor<half> dq = dqBuf_.Get<half>();
       DataCopy(dqGm_[offsetQ], dq, tilingData_.B_q * tilingData_.d);
-      PipeBarrier<PIPE_ALL>();
+      SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+      WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
     }
   }
 }
@@ -186,7 +188,8 @@ FlashAttentionBwd_dQ_Kernel::CopyInAndInit(uint32_t batch, uint64_t headOffset1D
   uint64_t offset1D = headOffset1D + (batchOffset_ + batch) * tilingData_.B_q;
   DataCopy(lLocal, lGm_[offset1D], tilingData_.B_q);
   DataCopy(dLocal, dGm_[offset1D], tilingData_.B_q);
-  PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
+  WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
 }
 
 __aicore__ inline void
@@ -268,7 +271,7 @@ FlashAttentionBwd_dQ_Kernel::InnerCycle_Compute(uint32_t i, uint64_t offsetQ, ui
 
   Add(dqLocal, dqLocal, tmpMmLocal, tilingData_.d * tilingData_.B_q);
   tmpMmResQue_.FreeTensor(tmpMmLocal);
-  PipeBarrier<PIPE_ALL>();
+  PipeBarrier<PIPE_V>();
 }
 
 extern "C" __global__ __aicore__ void

@@ -188,12 +188,14 @@ __aicore__ inline void FlashAttentionBwd_dKdV_Kernel::Process() {
       for (uint32_t i = 0; i < T_q; ++i) {
         InnerCycle(i, offsetKV, headOffsetQ, headOffset1D);
       }
-      PipeBarrier<PIPE_ALL>();
+      SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
+      WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
       LocalTensor<half> dk = dkBuf_.Get<half>();
       LocalTensor<half> dv = dvBuf_.Get<half>();
       DataCopy(dkGm_[offsetKV], dk, tilingData_.B_k * tilingData_.d);
       DataCopy(dvGm_[offsetKV], dv, tilingData_.B_k * tilingData_.d);
-      PipeBarrier<PIPE_ALL>();
+      SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+      WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
     }
   }
 }
@@ -221,7 +223,8 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_CopyIn(uint32_t i, uint64_t headOffset
   uint64_t offset1D = headOffset1D + i * tilingData_.B_q;
   DataCopy(lLocal, lGm_[offset1D], tilingData_.B_q);
   DataCopy(dLocal, dGm_[offset1D], tilingData_.B_q);
-  PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
+  WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
 }
 
 __aicore__ inline void
@@ -290,7 +293,8 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
   dpQue_.FreeTensor(dpLocal);
   dsQue_.EnQue(dsLocal);
 
-  PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::V_S>(EVENT_ID0);
+  WaitFlag<HardEvent::V_S>(EVENT_ID0);
 
   // 4. Vector 计算完毕后，安全下发 P^T @ dO -> dV (Cube)
   mmPdO_.SetLocalWorkspace(mmWs3);
@@ -320,7 +324,7 @@ FlashAttentionBwd_dKdV_Kernel::InnerCycle_Compute(uint32_t i,
   LocalTensor<half> tmpMmLocal2 = tmpMmResQue_.DeQue<half>();
   Add(dkLocal, dkLocal, tmpMmLocal2, tilingData_.d * tilingData_.B_k);
   tmpMmResQue_.FreeTensor(tmpMmLocal2);
-  PipeBarrier<PIPE_ALL>();
+  PipeBarrier<PIPE_V>();
 }
 
 extern "C" __global__ __aicore__ void
