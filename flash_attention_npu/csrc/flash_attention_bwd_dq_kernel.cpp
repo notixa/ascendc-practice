@@ -180,7 +180,26 @@ __aicore__ inline void FlashAttentionBwd_dQ_Kernel::Process() {
       DataCopy(dqGm_[offsetQ], dq, tilingData_.B_q * tilingData_.d);
       SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
       WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
+      PipeBarrier<PIPE_ALL>();
     }
+    mmQK_.End();
+    mmdOV_.End();
+    mmdSK_.End();
+    mmQK_.Init(&tilingData_.cubeTilingQK, &pipe_);
+    mmQK_.SetOrgShape(tilingData_.cubeTilingQK.M, tilingData_.cubeTilingQK.N,
+                      tilingData_.cubeTilingQK.Ka, tilingData_.cubeTilingQK.Kb);
+    mmdOV_.Init(&tilingData_.cubeTilingdOV, &pipe_);
+    mmdOV_.SetOrgShape(tilingData_.cubeTilingdOV.M, tilingData_.cubeTilingdOV.N,
+                       tilingData_.cubeTilingdOV.Ka, tilingData_.cubeTilingdOV.Kb);
+    mmdSK_.Init(&tilingData_.cubeTilingdSK, &pipe_);
+    mmdSK_.SetOrgShape(tilingData_.cubeTilingdSK.M, tilingData_.cubeTilingdSK.N,
+                       tilingData_.cubeTilingdSK.Ka, tilingData_.cubeTilingdSK.Kb);
+    LocalTensor<uint8_t> mmWs1 = mmWs1Buf_.Get<uint8_t>();
+    LocalTensor<uint8_t> mmWs2 = mmWs2Buf_.Get<uint8_t>();
+    LocalTensor<uint8_t> mmWs3 = mmWs3Buf_.Get<uint8_t>();
+    mmQK_.SetLocalWorkspace(mmWs1);
+    mmdOV_.SetLocalWorkspace(mmWs2);
+    mmdSK_.SetLocalWorkspace(mmWs3);
   }
 }
 

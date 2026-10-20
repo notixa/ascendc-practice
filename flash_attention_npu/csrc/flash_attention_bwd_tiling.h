@@ -127,7 +127,9 @@ inline void InitMatmulTCubeTilingBwd(TCubeTiling &t, int32_t M, int32_t N, int32
   t.stepKa = 1;
   t.stepKb = 1;
   t.depthA1 = 1;
-  t.depthB1 = 1;
+  t.depthB1 = 2; // B 矩阵在 L1 开启双缓冲
+  t.dbL0A = 0;
+  t.dbL0B = 0;
   t.isBias = 0;
   t.iterateOrder = 0;
   t.usedCoreNum = 1;

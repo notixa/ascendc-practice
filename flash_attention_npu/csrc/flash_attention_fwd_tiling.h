@@ -147,7 +147,9 @@ inline void ComputeFlashAttentionFwdTiling(
   qk.stepKa = 1;
   qk.stepKb = 1;
   qk.depthA1 = 1;
-  qk.depthB1 = 1;
+  qk.depthB1 = 2; // K 矩阵在 L1 开启双缓冲预取
+  qk.dbL0A = 0;
+  qk.dbL0B = 0;
   qk.isBias = 0;
   qk.iterateOrder = 0;
   qk.usedCoreNum = 1;
@@ -170,7 +172,9 @@ inline void ComputeFlashAttentionFwdTiling(
   pv.stepKa = 1;
   pv.stepKb = 1;
   pv.depthA1 = 1;
-  pv.depthB1 = 1;
+  pv.depthB1 = 2; // V 矩阵在 L1 开启双缓冲预取
+  pv.dbL0A = 0;
+  pv.dbL0B = 0;
   pv.isBias = 0;
   pv.iterateOrder = 0;
   pv.usedCoreNum = 1;

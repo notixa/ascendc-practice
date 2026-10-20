@@ -184,7 +184,21 @@ __aicore__ inline void FlashAttentionFwdKernel::Process() {
       DataCopy(lGm_[offsetL], l, tilingData_.B_q);
       SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
       WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
+      PipeBarrier<PIPE_ALL>();
     }
+    // 重置 Matmul 双缓冲流水线，彻底消除跨 Head 残留预取状态污染
+    mmQK_.End();
+    mmPV_.End();
+    mmQK_.Init(&tilingData_.cubeTilingQK, &pipe_);
+    mmQK_.SetOrgShape(tilingData_.cubeTilingQK.M, tilingData_.cubeTilingQK.N,
+                      tilingData_.cubeTilingQK.Ka, tilingData_.cubeTilingQK.Kb);
+    mmPV_.Init(&tilingData_.cubeTilingPV, &pipe_);
+    mmPV_.SetOrgShape(tilingData_.cubeTilingPV.M, tilingData_.cubeTilingPV.N,
+                      tilingData_.cubeTilingPV.Ka, tilingData_.cubeTilingPV.Kb);
+    LocalTensor<uint8_t> mmWsQK = mmWsQKBuf_.Get<uint8_t>();
+    LocalTensor<uint8_t> mmWsPV = mmWsPVBuf_.Get<uint8_t>();
+    mmQK_.SetLocalWorkspace(mmWsQK);
+    mmPV_.SetLocalWorkspace(mmWsPV);
   }
 }
 

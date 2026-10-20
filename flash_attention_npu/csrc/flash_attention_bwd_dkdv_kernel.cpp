@@ -203,7 +203,32 @@ __aicore__ inline void FlashAttentionBwd_dKdV_Kernel::Process() {
       DataCopy(dvGm_[offsetKV], dv, tilingData_.B_k * tilingData_.d);
       SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
       WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
+      PipeBarrier<PIPE_ALL>();
     }
+    mmQK_.End();
+    mmPdO_.End();
+    mmdOV_.End();
+    mmdSQ_.End();
+    mmQK_.Init(&tilingData_.cubeTilingQK, &pipe_);
+    mmQK_.SetOrgShape(tilingData_.cubeTilingQK.M, tilingData_.cubeTilingQK.N,
+                      tilingData_.cubeTilingQK.Ka, tilingData_.cubeTilingQK.Kb);
+    mmPdO_.Init(&tilingData_.cubeTilingPdO, &pipe_);
+    mmPdO_.SetOrgShape(tilingData_.cubeTilingPdO.M, tilingData_.cubeTilingPdO.N,
+                       tilingData_.cubeTilingPdO.Ka, tilingData_.cubeTilingPdO.Kb);
+    mmdOV_.Init(&tilingData_.cubeTilingdOV, &pipe_);
+    mmdOV_.SetOrgShape(tilingData_.cubeTilingdOV.M, tilingData_.cubeTilingdOV.N,
+                       tilingData_.cubeTilingdOV.Ka, tilingData_.cubeTilingdOV.Kb);
+    mmdSQ_.Init(&tilingData_.cubeTilingdSQ, &pipe_);
+    mmdSQ_.SetOrgShape(tilingData_.cubeTilingdSQ.M, tilingData_.cubeTilingdSQ.N,
+                       tilingData_.cubeTilingdSQ.Ka, tilingData_.cubeTilingdSQ.Kb);
+    LocalTensor<uint8_t> mmWs1 = mmWs1Buf_.Get<uint8_t>();
+    LocalTensor<uint8_t> mmWs2 = mmWs2Buf_.Get<uint8_t>();
+    LocalTensor<uint8_t> mmWs3 = mmWs3Buf_.Get<uint8_t>();
+    LocalTensor<uint8_t> mmWs4 = mmWs4Buf_.Get<uint8_t>();
+    mmQK_.SetLocalWorkspace(mmWs1);
+    mmdOV_.SetLocalWorkspace(mmWs2);
+    mmPdO_.SetLocalWorkspace(mmWs3);
+    mmdSQ_.SetLocalWorkspace(mmWs4);
   }
 }
 
