@@ -1,0 +1,40 @@
+[project]
+name = "triton-lab"
+version = "0.1.0"
+description = "Triton-Ascend 练习区：把 CS336 的 FlashAttention 迁到昇腾"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+
+# ---------------------------------------------------------------------------
+# 依赖原则：
+#   1. triton-ascend 的 wheel **自带一个顶层 `triton` 包**，会和上游 triton 抢名字，
+#      所以这个项目必须独立 venv，绝不能和 catlass/其他 GPU 项目共用环境。
+#   2. 版本必须和 CANN 对齐（3.2.x / 3.6.0 对应 CANN 9.x；本机 CANN 8.5.0 大概率不匹配）。
+#      第一次在 910B 机器上 `uv sync` 成功后，把实际版本回填到这里锁定。
+# ---------------------------------------------------------------------------
+dependencies = [
+    "triton-ascend>=3.2.2,<4",
+]
+
+[project.optional-dependencies]
+# 体检 / 测试用，不含 torch（torch 由 triton-ascend 的依赖或机器上已有环境提供）
+dev = [
+    "pytest>=8",
+    "numpy>=1.26",
+]
+
+[tool.uv]
+# 纯练习工程，不做成可安装包；代码直接 `uv run python kernels/xxx.py` 跑
+package = false
+
+[[tool.uv.index]]
+name = "triton-ascend"
+url = "https://triton-ascend.osinfra.cn/pypi/simple"
+explicit = true
+
+[tool.uv.sources]
+triton-ascend = { index = "triton-ascend" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

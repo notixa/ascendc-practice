@@ -62,3 +62,4 @@ PROF_*/
 mindstudio_profiler_*
 *.db
 *.db-*
+.uv-cache/

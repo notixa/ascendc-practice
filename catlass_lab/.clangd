@@ -1,0 +1,31 @@
+# CATLASS 实验区的 clangd 配置（只影响本目录及其子目录）
+#
+# 根目录 .clangd 负责：AscendC 头文件、__gm__/__aicore__ 等关键字打桩
+# 本文件负责：CATLASS 头文件搜索路径、AscendC 主头文件、bisheng 内建 half 的替身
+#
+# 注意：不要定义 -D__CCE__，否则 CATLASS 的 CATLASS_HOST_DEVICE 会展开成
+#       __forceinline__[host, aicore]（bisheng 私有语法），clangd 直接解析失败。
+
+CompileFlags:
+  Add:
+    # —— 关键：CATLASS 全仓有 137 处 #if CATLASS_ARCH == 2201 的条件编译 ——
+    #    不定义它，BlockMmad / TileCopy 的 A2 特化全部不参与解析，跳转全断
+    - -DCATLASS_ARCH=2201
+    # —— CATLASS 模板库本体 ——
+    - -I/home/notixa/codes/opensource-project/catlass/include
+    # —— examples/common（golden.hpp / helper.hpp，写样例时要用）——
+    - -I/home/notixa/codes/opensource-project/catlass/examples/common
+    # —— CATLASS 依赖 AscendC 的 LocalTensor / TPosition / TBuf ——
+    #    注意：不能直接 -include kernel_operator.h！
+    #    该头依赖 bisheng 内建类型 pipe_t / event_t / PIPE_*，clang 下会爆 1w+ 错误。
+    #    由 clangd_stub.h 提供同名类型的"最小可解析替身"。
+    # —— 补上 bisheng 内建的 half 类型（仅 clangd 解析用）——
+    - -include/home/notixa/codes/ascendc/catlass_lab/clangd_stub.h
+    - -ferror-limit=0
+    - -Wno-unused-variable
+    - -Wno-unused-but-set-variable
+
+Diagnostics:
+  # CATLASS 头文件层层转发，clangd 的 include-cleaner 会疯狂误报
+  UnusedIncludes: None
+  MissingIncludes: None

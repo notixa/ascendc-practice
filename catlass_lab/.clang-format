@@ -1,0 +1,50 @@
+# 与 CATLASS 官方仓 .clang-format 保持一致的风格
+# 目的：在 catlass_lab/ 里写实验代码时，Zed 保存即格式化，且不会把代码改成 LLVM 默认风格
+BasedOnStyle: Google
+ColumnLimit: 120
+AccessModifierOffset: -4
+SortIncludes: false
+BreakBeforeBraces: Custom
+
+BraceWrapping:
+    AfterCaseLabel: false
+    AfterClass: false
+    AfterControlStatement: false
+    AfterEnum: true
+    AfterFunction: true
+    AfterNamespace: false
+    AfterStruct: false
+    AfterUnion: false
+    AfterExternBlock: false
+    BeforeCatch: false
+    BeforeElse: false
+    IndentBraces: false
+    SplitEmptyFunction: false
+    SplitEmptyRecord: true
+    SplitEmptyNamespace: true
+
+AlignAfterOpenBracket: AlwaysBreak
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlignTrailingComments: true
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+AlwaysBreakBeforeMultilineStrings: true
+AlwaysBreakTemplateDeclarations: true
+
+BinPackArguments: true
+BreakBeforeTernaryOperators: false
+SpacesBeforeTrailingComments: 1
+
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+AllowShortBlocksOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+
+UseTab: Never
+IndentWidth: 4
+TabWidth: 4
