@@ -50,6 +50,12 @@ env/
 *~
 .DS_Store
 
+# Local clangd configuration (machine-specific absolute paths)
+.clangd
+.clangd_stub.h
+clangd_stub.h
+verify_clangd.sh
+
 # Ascend / NPU profiling, dumps, core files, and logs
 plog/
 dump/
