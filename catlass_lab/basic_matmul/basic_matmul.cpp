@@ -41,6 +41,10 @@ static void Run(const Options& options)
     size_t lenB = static_cast<size_t>(k) * n;
     size_t lenC = static_cast<size_t>(m) * n;
 
+    size_t sizeA = lenA * sizeof(ElementA);
+    size_t sizeB = lenB * sizeof(ElementB);
+    size_t sizeC = lenC * sizeof(ElementC);
+
     using LayoutA = layout::RowMajor;
     using LayoutB = layout::RowMajor;
     using LayoutC = layout::RowMajor;
@@ -82,6 +86,8 @@ static void Run(const Options& options)
     using BlockScheduler = typename Gemm::Block::GemmIdentityBlockSwizzle<3, 0>;
 
     using MatmulKernel = Gemm::Kernel::BasicMatmul<BlockMmad, BlockEpilogue, BlockScheduler>;
+
+    using MatmulAdapter = Gemm::Device::DeviceGemm<MatmulKernel>;
     MatmulKernel::Arguments arguments{options.problemShape, deviceA, deviceB, deviceC};
     MatmulAdapter matmulOp;
     matmulOp.CanImplement(arguments);

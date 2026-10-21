@@ -19,6 +19,10 @@ CompileFlags:
     #    注意：不能直接 -include kernel_operator.h！
     #    该头依赖 bisheng 内建类型 pipe_t / event_t / PIPE_*，clang 下会爆 1w+ 错误。
     #    由 clangd_stub.h 提供同名类型的"最小可解析替身"。
+    # —— 样例脚手架（helper.hpp/golden.hpp）要的 ACLNN 头 ——
+    #    opdev/bfloat16.h 在 include/aclnn 下，acl/acl.h 和 tiling/ 在 include 下
+    - -I/home/notixa/Ascend/cann-8.5.0/x86_64-linux/include
+    - -I/home/notixa/Ascend/cann-8.5.0/x86_64-linux/include/aclnn
     # —— 补上 bisheng 内建的 half 类型（仅 clangd 解析用）——
     - -include/home/notixa/codes/ascendc/catlass_lab/clangd_stub.h
     - -ferror-limit=0
