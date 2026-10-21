@@ -201,7 +201,7 @@ bash scripts/build.sh --msdebug   00_basic_matmul    # mssanitizer/msdebug
 
 **让 clangd 能跳转**（✅ 已配好，见第 8 节）：
 CATLASS 是纯模板代码，没有 go-to-definition 基本没法读。配置已落地在
-`catlass_lab/.clangd` + `catlass_lab/clangd_stub.h` + `~/.config/clangd/config.yaml`，
+`catlass_lab/.clangd` + `catlass_lab/clangd_prelude.h` + `~/.config/clangd/config.yaml`，
 改完配置后用 `bash catlass_lab/verify_clangd.sh` 一键自检。
 
 ---
@@ -235,7 +235,7 @@ CATLASS 是纯模板代码，没有 go-to-definition 基本没法读。配置已
 
 ---
 
-## 8. 编辑器 / LSP 配置（已完成，2026-10-20 实测通过）
+## 8. 编辑器 / LSP 配置（已重做，2026-10-21 实测通过：改用 CANN 真实头 + CPU 仿真桩）
 
 CATLASS 全是模板，**没有跳转就等于不能读**。这套配置的目标是：在 Zed 里对 CATLASS 的类型/模板能正常 `跳转定义`、`hover`、`补全`，且不报一屏红线。
 
@@ -243,8 +243,8 @@ CATLASS 全是模板，**没有跳转就等于不能读**。这套配置的目�
 
 | 文件 | 作用 |
 | :-- | :-- |
-| `catlass_lab/.clangd` | 只管 `catlass_lab/` 及其子目录：CATLASS 头路径 + 关键宏 + 替身头文件 |
-| `catlass_lab/clangd_stub.h` | **给 clangd 用的 AscendC 最小替身**，补 bisheng 内建符号（`half`/`TPosition`/`HardEvent`/`TBuf`/`GetTPipePtr`…） |
+| `catlass_lab/.clangd` | 只管 `catlass_lab/` 及其子目录：CATLASS 头路径 + 关键宏 + 预包含头 |
+| `catlass_lab/clangd_prelude.h` | **模仿 bisheng 的隐式预包含**：把 `kernel_operator.h` 排到 TU 最前面，让 `AscendC` 命名空间先就绪（否则 examples 里"先 include kernel 头、后 include catlass.hpp"直接报 `'AscendC' undeclared`） |
 | `~/.config/clangd/config.yaml` | 追加了一段 `PathMatch: .*/opensource-project/catlass/.*`，**让 CATLASS 仓库本身的文件**（examples、include）也享受同一套配置 |
 | `.zed/settings.json` | clangd 参数调优 + inlay hints + 索引排除 |
 | `catlass_lab/.clang-format` | 与 CATLASS 官方仓同款风格（Google/120 列/大括号换行），避免保存即格式化把代码改成 LLVM 默认风格 |
@@ -255,13 +255,22 @@ CATLASS 全是模板，**没有跳转就等于不能读**。这套配置的目�
 1. **`-DCATLASS_ARCH=2201`**
    CATLASS 全仓 137 处 `#if CATLASS_ARCH == 2201` 条件编译。不定义它，`BlockMmad`/`TileCopy` 的 A2 特化根本不参与解析 —— 表现就是"跳进去是空的主模板 + static_assert"。
 
-2. **绝对不能直接 `-include kernel_operator.h`**
-   它依赖 bisheng 编译器内建类型 `pipe_t` / `event_t` / `PIPE_*`（CANN 头里根本没有定义，是编译器给的）。
-   clang 不认识 → 一个 TU 直接爆 **11400 个 error**，clangd 的 AST 当场崩。
-   所以用 `clangd_stub.h` 提供同名替身，并且**预先占住 `ASCENDC_MODULE_OPERATOR_H` 这个 include guard**，让 `#include "kernel_operator.h"` 在 clangd 下变成空操作，避免替身与真实头重复声明。
+2. **`-include clangd_prelude.h` + `-DASCENDC_CPU_DEBUG=1`（这是整套配置的核心）**
+   - bisheng（ccec）会**隐式预包含** `kernel_operator.h`，所以 CATLASS 的 examples 敢先写
+     `#include "catlass/gemm/kernel/basic_matmul.hpp"`（它第 39 行就用 `AscendC::TPosition`）、
+     后写 `#include "catlass/catlass.hpp"`。普通 clang 不会预包含，于是**第一个头就报
+     `use of undeclared identifier 'AscendC'`** —— 这也是你之前看到的第一个红线的真身。
+     预包含头的作用就是把这步补上。
+   - 光预包含还不够：`kernel_operator.h` 依赖 bisheng 内建符号（`half`、`pipe_t`、`event_t`、
+     `PIPE_MTE2`…），CANN 头里没有。正解是打开 CANN **自带**的 CPU 仿真桩
+     `-DASCENDC_CPU_DEBUG=1`（tikicpulib 的 `stub_def.h`/`stub_fun.h` 会补齐这些符号）。
+     于是 clangd 的 hover / 跳转直接落在 **CANN 真实声明**上，比手写替身有用得多。
+   - 附带要求：CANN 8.5 起 AscendC 头搬到了独立的 `asc/` 树（不再是 `tikcpp/tikcfw`），
+     且 `impl/basic_api` 等子目录要单独 `-I`，`kernel_log.h` 还依赖 `tikicpulib/lib/include`。
 
 3. **`-ferror-limit=0`**
-   深层 tile 头里可能残留个别解析不了的 AscendC 参数类型。把上限抬掉，保证 clangd 不会"报够 20 个错就放弃建索引"。
+   使用真实 CANN 头时，仍有极少数 bisheng 专有写法 clang 解析不了（如 `constexpr` 里用
+   `half`）。把上限抬掉，保证 clangd 不会"报够 20 个错就放弃建索引"。
 
 ### 8.3 `.zed/settings.json` 调了什么（相对你原来的）
 
@@ -280,28 +289,40 @@ CATLASS 全是模板，**没有跳转就等于不能读**。这套配置的目�
 bash catlass_lab/verify_clangd.sh
 ```
 
-当前结果（2026-10-20 20:19）：
+当前结果（2026-10-21 18:50，CANN 8.5.0 + clangd 23.1.3）：
 
 ```
-clangd_probe.cpp             OK
-basic_matmul.cpp             OK
-matmul_add.cpp               OK
-matmul_gelu.cpp              OK
-fai_kernel.cpp               OK
-全部通过 ✅
+clangd_probe.cpp             OK  (0 errors)
+basic_matmul.cpp (lab)       OK  (0 errors)
+matmul_leakyrelu.cpp (lab)   OK  (0 errors)
+basic_matmul.cpp (repo)      OK  (0 errors)
+matmul_add.cpp               OK  (0 errors)
+matmul_gelu.cpp              OK  (0 errors)
+fai_kernel.cpp               WARN(2 errors)   ← 已知差异，见下
 ```
 
-⚠️ **一个正常现象**：单独打开某个"实现型"头文件（如 `gemm/block/block_mmad.hpp`、`block_mmad_pingpong.hpp`）时，
+⚠️ **`fai_kernel.cpp` 的 2 个 errors 是 clangd 与 bisheng 的已知差异，不是代码问题**：
+`FAInferKernel` 里写的是 `template <int32_t CORE_TYPE = g_coreType> void operator()(...)`。
+`g_coreType` 在 bisheng 里是**编译期常量**（cube 编 AIC、vector 编 AIV），而 CPU 仿真桩里它是
+`extern int32_t g_coreType;` —— 普通变量，不能当模板默认实参，于是那 2 处 `flashAttnInfer(params)`
+overload resolution 失败。**跳转/补全/读代码完全不受影响**，真机构建也不受影响。
+
+⚠️ **另一个正常现象**：单独打开某个"实现型"头文件（如 `gemm/block/block_mmad.hpp`、`block_mmad_pingpong.hpp`）时，
 会看到几条 `explicit specialization of undeclared template struct 'BlockMmad'` 之类的红线 ——
 因为这些头文件不是自包含的（它的主模板声明在别的头里）。**不影响跳转**：
 从 `examples/*.cpp` 或 `kernel/basic_matmul.hpp` 里点进去看，上下文是完整的。
 另外 `kernel/basic_matmul.hpp` 单独打开是 0 报错的，正好是 W1 要精读的那个文件。
 
 失效时按顺序排查：
-1. **路径变了**（仓库搬家/改名）→ 改 `catlass_lab/.clangd` 和 `~/.config/clangd/config.yaml` 里的绝对路径；
+1. **路径变了**（仓库搬家/改名/CANN 升级）→ 改 `catlass_lab/.clangd` 和 `~/.config/clangd/config.yaml` 里的绝对路径；
 2. **改了配置没生效** → Zed 里执行 `editor: restart language server`（clangd 只在启动时读 `.clangd`）；
 3. **索引残留** → `rm -rf ~/.cache/clangd/index` 后重启语言服务器（第一次重建会慢几分钟，模板量大）；
-4. **新增了 CATLASS 头文件、出现新的红线** → 大概率是某个 AscendC 符号还没进替身，去 `clangd_stub.h` 补一个同名 `struct`/`using`/variadic 函数桩即可（补完跑一次自检脚本）。
+4. **CANN 换了版本** → 先确认 `asc/`、`tools/tikicpulib/lib/include` 还在老位置，`grep -r "enum pipe_t" -A3 .../stub_fun.h` 能出东西。
 
-> 说明：`clangd_stub.h` 被 `#if defined(__clang__) && !defined(__CCE__)` 包着，**只在 clangd 里生效**；
-> bisheng 真机编译永远不会看到它，所以不用担心污染真实构建。
+> 另一个更快的定位法：**先 `diff` 再读报错**。手敲的样例漏一行，报错常指向"使用点"而不是"缺失点"
+> （例如少 `size_t sizeA` 会报 `no matching function for call to 'aclrtMalloc'`）。
+> ```bash
+> diff -u ~/codes/opensource-project/catlass/examples/00_basic_matmul/basic_matmul.cpp \
+>         catlass_lab/basic_matmul/basic_matmul.cpp
+> ```
+
