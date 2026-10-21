@@ -5,7 +5,8 @@
 # 用法：
 #   bash catlass_lab/w1/run.sh 1     # L1TileShape 超限
 #   bash catlass_lab/w1/run.sh 2     # L0TileShape 超限
-#   bash catlass_lab/w1/run.sh 3     # DispatchPolicy 换 Preload（能编过）
+#   bash catlass_lab/w1/run.sh 3     # 只换 policy（反例，必然失败）
+#   bash catlass_lab/w1/run.sh 3b    # policy + kernel 一起换（能编过）
 #   bash catlass_lab/w1/run.sh 4     # LayoutB 换 ColumnMajor（能编过）
 #   bash catlass_lab/w1/run.sh 5     # LayoutC 换 ColumnMajor（必报错，用来认识模板边界）
 #   KEEP=1 bash catlass_lab/w1/run.sh 3   # 改完保留现场（方便在 Zed 里看类型），手动还原见末尾提示
@@ -50,9 +51,18 @@ case "$EXP" in
     echo "        手算：L0C = 256*256*4 = 262144 B > L0C 128KB  → 预期编译失败（报 L0C）"
     ;;
 3)
+    # 反例：只换 policy，不换 kernel —— 必然失败，这是"契约耦合"的最好证据
     sed -i 's|using DispatchPolicy = Gemm::MmadAtlasA2Pingpong<true>;|using DispatchPolicy = Gemm::MmadAtlasA2Preload<true>;|' "$SRC"
-    echo "[exp3] DispatchPolicy Pingpong<true> -> Preload<true>"
-    echo "       预期：能编过（block_mmad_preload.hpp 有对应特化）；本次只能验\"能编过\""
+    echo "[exp3] 只换 DispatchPolicy：Pingpong<true> -> Preload<true>（不动 kernel）"
+    echo "       预期：编译失败，no matching function for call to BlockMmad（参数个数不匹配）"
+    ;;
+3b)
+    # 正例：policy + kernel 一起换（Preload 版 operator() 多要 next block 的地址/形状）
+    sed -i 's|using DispatchPolicy = Gemm::MmadAtlasA2Pingpong<true>;|using DispatchPolicy = Gemm::MmadAtlasA2Preload<true>;|' "$SRC"
+    sed -i 's|using MatmulKernel = Gemm::Kernel::BasicMatmul<BlockMmad, BlockEpilogue, BlockScheduler>;|using MatmulKernel = Gemm::Kernel::BasicMatmulPreload<BlockMmad, BlockEpilogue, BlockScheduler>;|' "$SRC"
+    sed -i '/#include "catlass\/gemm\/kernel\/basic_matmul.hpp"/a #include "catlass/gemm/kernel/basic_matmul_preload.hpp"' "$SRC"
+    echo "[exp3b] policy + kernel 一起换：Preload<true> + BasicMatmulPreload"
+    echo "        参照 examples/21_basic_matmul_preload_zN；预期：能编过"
     ;;
 4)
     sed -i 's|using LayoutB = layout::RowMajor;|using LayoutB = layout::ColumnMajor;|' "$SRC"
@@ -65,7 +75,7 @@ case "$EXP" in
     echo "       预期：编译失败 —— \"LayoutC only support RowMajor yet!\"（模板库的边界）"
     ;;
 *)
-    echo "用法：bash $0 <1|2|2b|3|4|5>"
+    echo "用法：bash $0 <1|2|2b|3|3b|4|5>"
     exit 1
     ;;
 esac
@@ -84,7 +94,7 @@ if [[ $rc -eq 0 ]]; then
     echo "结果：编译通过 ✅"
     echo "  → 若本实验预期\"失败\"，说明你的手算有误，回去核对 L1/L0 的字节数。"
 else
-    echo "结果：编译失败（对 exp1/2/2b/5 这正是预期）"
+    echo "结果：编译失败（对 exp1/2/2b/3/5 这正是预期；exp3b/4 若失败则需排查）"
     echo "  关键报错："
     grep -nE "static assertion failed|exceeding the|only support RowMajor|error:" "$LOG" \
         | grep -v "unused" | head -12 | sed 's/^/    /'

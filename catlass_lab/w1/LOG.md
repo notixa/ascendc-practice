@@ -8,7 +8,8 @@
 | 1 | L1 K: 256→512 | L1 = ____ B vs 524288 | | |
 | 2 | L0 K: 64→128 | L0A = ____ / L0B = ____ | | |
 | 2b | L1=L0=256×256×64 | L0C = ____ vs 131072 | | |
-| 3 | Pingpong→Preload | —— | | |
+| 3 | 只换 policy | —— | | |
+| 3b | policy + kernel 一起换 | —— | | |
 | 4 | LayoutB → ColumnMajor | —— | | |
 | 5 | LayoutC → ColumnMajor | —— | | |
 
@@ -16,3 +17,5 @@
 
 - 
 - 
+
+- exp3 结论：只换 policy 会 `no matching function`（Preload 版 operator() 要 12 个参数）；policy 与 kernel 必须成对换（exp3b），参照 examples/21_basic_matmul_preload_zN。

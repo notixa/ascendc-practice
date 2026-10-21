@@ -21,7 +21,8 @@ add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-${CATLASS_ARCH}>)
 | 1 | `L1TileShape` K 256→512 | ✅ 完整：编译失败 + 报错原文 | —— |
 | 2 | `L0TileShape` K 64→128 | ✅ 完整：编译失败 + 报错原文 | —— |
 | 2b（附加） | L1=L0=256×256×64 | ✅ 完整：触发 **L0C** 那条断言 | —— |
-| 3 | `DispatchPolicy` Pingpong→Preload | ⚠️ 只能验“能编过”+ 看类型差异 | 流水气泡、耗时 |
+| 3 | 只换 `DispatchPolicy`（不动 kernel） | ✅ 完整：**编译失败**，`no matching function` | —— |
+| 3b | policy + kernel 一起换（`BasicMatmulPreload`） | ⚠️ 只能验“能编过”+ 看接口差异 | 流水气泡、耗时 |
 | 4 | `LayoutB` RowMajor→ColumnMajor | ⚠️ 只能验“能编过”+ 看 TileCopy 特化 | 搬运效率、精度（`Compare success`） |
 | 5（附加） | `LayoutC` RowMajor→ColumnMajor | ✅ 完整：`"LayoutC only support RowMajor yet!"` | —— |
 
@@ -57,11 +58,12 @@ bash catlass_lab/w1/run.sh 1
 bash catlass_lab/w1/run.sh 2
 bash catlass_lab/w1/run.sh 2b
 bash catlass_lab/w1/run.sh 3
+bash catlass_lab/w1/run.sh 3b
 bash catlass_lab/w1/run.sh 4
 bash catlass_lab/w1/run.sh 5
 
 # 想保留现场（在 Zed 里 hover 看类型）：
-KEEP=1 bash catlass_lab/w1/run.sh 3
+KEEP=1 bash catlass_lab/w1/run.sh 3b
 # 还原：
 git -C ~/codes/opensource-project/catlass checkout -- examples/00_basic_matmul/basic_matmul.cpp
 ```
@@ -79,9 +81,31 @@ git -C ~/codes/opensource-project/catlass checkout -- examples/00_basic_matmul/b
 | 1 | `L1TileShape exceeding the L1 space!` | `block_mmad_pingpong.hpp:122` |
 | 2 | `L0TileShape exceeding the L0B space!` | `:129` |
 | 2b | `L0TileShape exceeding the L0C space!` | `:130` |
-| 3 | （无报错） | —— |
+| 3 | `no matching function for call to object of type ...BlockMmad<MmadAtlasA2Preload<...>>` | `basic_matmul.hpp:135` |
+| 3b | （无报错） | —— |
 | 4 | （无报错） | —— |
 | 5 | `LayoutC only support RowMajor yet!` | `:119` |
+
+## 4.5 实验 3 为什么“只换 policy”一定失败（重要）
+
+Preload 版 `BlockMmad` 的 `operator()` 要 **12 个参数**（`block_mmad_preload.hpp:135`）：
+
+```cpp
+void operator()(gmBlockA, layoutA, gmBlockB, layoutB, gmBlockC, layoutC,
+                gmNextBlockA, gmNextBlockB,            // ← Preload 多要这两个
+                actualShape, actualShapeNext,          // ← 还有下一块的形状
+                isFirstBlock, hasNextBlock);
+```
+
+而 `BasicMatmul` 只会按 **7 参数**方式调用（`basic_matmul.hpp:135`）——因为它的职责就是“算完这一块”。
+所以 `no matching function for call to object of type BlockMmad<...>` 的含义是：
+**调用方与被调方的函数签名对不上**，不是内存/对齐问题。
+
+配套的 kernel 是 `BasicMatmulPreload`（它负责算出 next block 的偏移并一起传进去，`basic_matmul_preload.hpp:150`）。
+权威参照：`examples/21_basic_matmul_preload_zN`（policy = `MmadAtlasA2Preload<true,true>`，LayoutB = `zN`）。
+
+**这条实验真正教会你的**：模板库的“零件”之间是靠 **函数签名 + typedef 契约** 耦合的，不是靠配置项。
+换一个 policy，等于换了一个接口不同的零件，**必须同时换掉调用它的那一层**。
 
 ## 五、实验 3 / 4 在无 NPU 下怎么“看得见”
 
