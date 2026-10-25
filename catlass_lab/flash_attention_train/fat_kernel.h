@@ -13,16 +13,8 @@
 #include "catlass/gemm_coord.hpp"
 #include "catlass/layout/layout.hpp"
 
-#include "dav_c220/core_mng/roc/kernel_operator_group_barrier_impl.h"
 #include "fat_tiling.h"
-#include "kernel_event.h"
-#include "kernel_macros.h"
 #include "kernel_operator.h"
-#include "kernel_operator_block_sync_intf.h"
-#include "kernel_operator_common_intf_impl.h"
-#include "kernel_tensor.h"
-#include "stub_def.h"
-#include "stub_fun.h"
 using namespace Catlass;
 
 template <class BlockMmadQK_, class BlockMmadPV_, class BlockEpilogueOnlineSoftmax_, class BlockEpilogueRescaleO_>
@@ -72,13 +64,14 @@ public:
         BlockMmadPV_ mmadPV(resource, L1_QK_SIZE);
 
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
-        uint32_t headNum = t->h;
-        uint32_t dPerHead = t->d;
+        uint32_t headNum = t->head_num;
+        uint32_t headDim = t->head_dim;
         uint32_t B_q = t->B_q;
         uint32_t N_q = t->N_q;
         uint32_t B_k = t->B_k;
         uint32_t N_k = t->N_k;
         uint32_t numTask = t->numTask;
+        uint32_t batchNum = t->batch_num;
 
         GlobalTensor<ElementQ> qGm;
         GlobalTensor<ElementK> kGm;
@@ -92,34 +85,31 @@ public:
         pGm.SetGlobalBuffer((__gm__ ElementP*)params.p);
         vGm.SetGlobalBuffer((__gm__ ElementV*)params.v);
         oTmpGm.SetGlobalBuffer((__gm__ ElementOTmp*)params.oTemp);
-        const uint32_t strideQ_OTmp = headNum * dPerHead;
-        const uint32_t strideK_V = headNum * dPerHead;
-        const uint32_t strideS_P = B_k;
 
-        LayoutQ layoutQ{B_q, dPerHead};
-        LayoutK layoutK{B_k, dPerHead};
+        LayoutQ layoutQ{B_q, headDim, headNum * headDim};
+        LayoutK layoutK{B_k, headDim, headNum * headDim};
         LayoutS layoutS{B_q, B_k};
         LayoutP layoutP{B_q, B_k};
-        LayoutV layoutV{B_k, dPerHead};
-        LayoutOTmp layoutOTmp{B_q, dPerHead};
+        LayoutV layoutV{B_k, headDim, headNum * headDim};
+        LayoutOTmp layoutOTmp{B_q, headDim, headNum * headDim};
 
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += AscendC::GetBlockNum()) {
-            TaskInfo taskInfo = DecodeTask();
+            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, B_q, B_k, batchNum, headNum, headDim);
 
             uint32_t pingpongFlag = 0;
             for (uint32_t j = 0; j <= taskInfo.nDiag; ++j) {
                 uint32_t nIdx = j;
-                uint32_t kRowNum = std::min(B_k, N_k - j * B_k);
+                uint32_t kRowNum = (B_k < N_k - j * B_k) ? B_k : N_k - j * B_k;
                 uint32_t kvOffset =
-                    taskInfo.b * N_k * headNum * dPerHead + nIdx * B_k * headNum * dPerHead + taskInfo.h * dPerHead;
+                    taskInfo.b * N_k * headNum * headDim + nIdx * B_k * headNum * headDim + taskInfo.h * headDim;
 
-                GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, dPerHead};
+                GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, headDim};
                 mmadQK(
                     qGm[taskInfo.qOffset], kGm[kvOffset], sGm, layoutQ, layoutK, layoutS, actualShapeQK, pingpongFlag,
                     nIdx == 0);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
 
-                GemmCoord actualShapePV{taskInfo.qRowNum, dPerHead, kRowNum};
+                GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPV(pGm, vGm[kvOffset], oTmpGm, layoutP, layoutV, layoutOTmp, actualShapePV, pingpongFlag, smReady);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
             }
@@ -147,8 +137,10 @@ public:
         uint32_t N_k = t->N_k;
         uint32_t B_q = t->B_q;
         uint32_t B_k = t->B_k;
-        uint32_t headNum = t->h;
-        uint32_t dPerHead = t->d;
+        uint32_t headNum = t->head_num;
+        uint32_t headDim = t->head_dim;
+        uint32_t dPerHead = t->head_dim;
+        uint32_t batchNum = t->batch_num;
 
         BlockEpilogueOnlineSoftmax_ onlineSoftmax(resource, scaleValue);
         BlockEpilogueRescaleO_ rescaleO(resource);
@@ -164,14 +156,14 @@ public:
 
         LayoutS layoutS{B_q, B_k};
         LayoutP layoutP{B_q, B_k};
-        LayoutO layoutO{B_q, dPerHead * headNum};
+        LayoutO layoutO{B_q, dPerHead, dPerHead * headNum};
         LayoutOTmp layoutOTmp{B_q, dPerHead};
 
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < t->numTask; taskIdx += AscendC::GetBlockNum()) {
-            TaskInfo taskInfo = DecodeTask();
+            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, B_q, B_k, batchNum, headNum, headDim);
 
             for (uint32_t j = 0; j <= taskInfo.nDiag; ++j) {
-                uint32_t kRowNum = std::min(B_k, N_k - j * B_k);
+                uint32_t kRowNum = (B_k < N_k - j * B_k) ? B_k : N_k - j * B_k;
                 uint32_t oOffset = taskInfo.b * N_q * headNum * dPerHead + taskInfo.i * B_q * headNum * dPerHead +
                                    taskInfo.h * dPerHead;
                 Arch::CrossCoreWaitFlag(qkReady);
@@ -208,9 +200,24 @@ private:
         uint32_t qRowNum;
         uint32_t qOffset;
     };
-    TaskInfo DecodeTask();
     Arch::Resource<ArchTag> resource;
     Arch::CrossCoreFlag qkReady{QK_READY_ID};
     Arch::CrossCoreFlag smReady{SM_READY_ID};
     Arch::CrossCoreFlag pvReady{PV_READY_ID};
+
+private:
+    TaskInfo DecodeTask(
+        uint32_t taskIdx, uint32_t N_q, uint32_t B_q, uint32_t B_k, uint32_t batchNum, uint32_t headNum,
+        uint32_t headDim)
+    {
+        TaskInfo info;
+        uint32_t blocksPerBatch = (N_q + B_q - 1) / B_q;
+        info.b = taskIdx / (blocksPerBatch * headNum);
+        info.i = (taskIdx % (blocksPerBatch * headNum)) / headNum;
+        info.h = (taskIdx % (blocksPerBatch * headNum)) % headNum;
+        info.nDiag = ((info.i + 1) * B_q - 1) / B_k;
+        info.qRowNum = (B_q < N_q - info.i * B_q) ? B_q : N_q - info.i * B_q;
+        info.qOffset = info.b * N_q * headNum * headDim + info.i * B_q * headDim * headNum + info.h * headDim;
+        return info;
+    }
 };
