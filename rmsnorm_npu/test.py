@@ -3,6 +3,7 @@ import math
 import sys
 import torch
 
+
 def reference_rmsnorm(x, gamma, eps=1e-5):
     """Reference implementation of RMSNorm in pure PyTorch (cast to float for CPU stability)."""
     x_f = x.float()
@@ -12,6 +13,7 @@ def reference_rmsnorm(x, gamma, eps=1e-5):
     out = x_f * rrms * gamma_f
     return out.to(x.dtype)
 
+
 def run_tests():
     print("=" * 70)
     print("        Ascend C RMSNorm Custom Operator Test Suite")
@@ -19,11 +21,14 @@ def run_tests():
 
     # 1. Check imports and execution mode
     device = torch.device("cpu")
-    print(f"[INFO] Using Device: Ascend 310B NPU (PyTorch {torch.__version__} via Direct ACL Acceleration)")
+    print(
+        f"[INFO] Using Device: Ascend 310B NPU (PyTorch {torch.__version__} via Direct ACL Acceleration)"
+    )
 
     # 2. Check rmsnorm_npu extension import
     try:
         import rmsnorm_npu
+
         print("[INFO] Successfully imported 'rmsnorm_npu' custom extension module.\n")
     except ImportError as e:
         print(f"[ERROR] Failed to import 'rmsnorm_npu': {e}")
@@ -35,11 +40,23 @@ def run_tests():
         # (Shape, Dtype, Description)
         # Note: hiddenSize must be 32B aligned (e.g., multiple of 8 for FP32, 16 for FP16)
         ((1, 256), torch.float32, "Edge Case: Single Row (totalRows < coreNum)"),
-        ((2, 512), torch.float32, "Edge Case: totalRows == coreNum (2 rows on 2 cores)"),
-        ((3, 512), torch.float32, "Edge Case: Odd Rows (Load Balance Remainder 3 % 2 = 1)"),
+        (
+            (2, 512),
+            torch.float32,
+            "Edge Case: totalRows == coreNum (2 rows on 2 cores)",
+        ),
+        (
+            (3, 512),
+            torch.float32,
+            "Edge Case: Odd Rows (Load Balance Remainder 3 % 2 = 1)",
+        ),
         ((16, 1024), torch.float32, "Standard 2D Batch [M=16, K=1024]"),
         ((64, 2048), torch.float32, "Medium 2D Batch [M=64, K=2048]"),
-        ((2, 128, 1024), torch.float32, "3D Transformer Shape [Batch=2, Seq=128, Hidden=1024]"),
+        (
+            (2, 128, 1024),
+            torch.float32,
+            "3D Transformer Shape [Batch=2, Seq=128, Hidden=1024]",
+        ),
         ((1, 256), torch.float16, "FP16 Edge Case: Single Row"),
         ((3, 512), torch.float16, "FP16 Edge Case: Odd Rows (3 rows)"),
         ((16, 1024), torch.float16, "FP16 Standard 2D Batch [16, 1024]"),
@@ -47,12 +64,14 @@ def run_tests():
     ]
 
     all_passed = True
-    print(f"{'Case':<52} | {'Shape':<16} | {'Dtype':<8} | {'Max Diff':<10} | {'Status'}")
+    print(
+        f"{'Case':<52} | {'Shape':<16} | {'Dtype':<8} | {'Max Diff':<10} | {'Status'}"
+    )
     print("-" * 102)
 
     for shape, dtype, desc in test_cases:
         hidden_size = shape[-1]
-        
+
         # Prepare inputs
         torch.manual_seed(42)
         x = torch.randn(shape, dtype=dtype, device=device)
@@ -76,7 +95,9 @@ def run_tests():
                 all_passed = False
 
             dtype_str = "FP32" if dtype == torch.float32 else "FP16"
-            print(f"{desc:<52} | {str(list(shape)):<16} | {dtype_str:<8} | {max_diff:<10.6f} | {status}")
+            print(
+                f"{desc:<52} | {str(list(shape)):<16} | {dtype_str:<8} | {max_diff:<10.6f} | {status}"
+            )
 
         except Exception as e:
             print(f"{desc:<52} | {str(list(shape)):<16} | EXCEPTION: {e}")
@@ -89,14 +110,16 @@ def run_tests():
         x_base = torch.randn((16, 2048), dtype=torch.float32, device=device)
         x_non_contig = x_base[:, :1024].t().t()  # create non-contiguous slice
         gamma = torch.randn(1024, dtype=torch.float32, device=device)
-        
+
         out_custom = rmsnorm_npu.forward(x_non_contig, gamma)
         out_ref = reference_rmsnorm(x_non_contig, gamma)
 
         max_diff = (out_custom - out_ref).abs().max().item()
         is_close = torch.allclose(out_custom, out_ref, atol=1e-4, rtol=1e-4)
         status = "\033[92mPASS\033[0m" if is_close else "\033[91mFAIL\033[0m"
-        print(f"{'Non-Contiguous Input [16, 1024]':<52} | {'[16, 1024]':<16} | {'FP32':<8} | {max_diff:<10.6f} | {status}")
+        print(
+            f"{'Non-Contiguous Input [16, 1024]':<52} | {'[16, 1024]':<16} | {'FP32':<8} | {max_diff:<10.6f} | {status}"
+        )
     except Exception as e:
         print(f"Non-Contiguous Test FAILED with exception: {e}")
         all_passed = False
@@ -136,11 +159,14 @@ def run_tests():
     print(f"Speedup                      : \033[93m{speedup:.2f}x\033[0m\n")
 
     if all_passed:
-        print("\033[92m>>> All correctness and regression tests PASSED successfully!\033[0m\n")
+        print(
+            "\033[92m>>> All correctness and regression tests PASSED successfully!\033[0m\n"
+        )
     else:
         print("\033[91m>>> Some tests FAILED. Please review the output above.\033[0m\n")
 
     return all_passed
+
 
 if __name__ == "__main__":
     run_tests()

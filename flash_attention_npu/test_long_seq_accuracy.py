@@ -1,4 +1,5 @@
 import os
+
 os.environ["TE_PARALLEL_COMPILER"] = "1"
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
@@ -14,10 +15,11 @@ import math
 torch.npu.set_device(0)
 torch.manual_seed(42)
 
+
 def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"[{name}] Testing B={b}, H={h}, N_q={nq}, N_k={nk}, d={d}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     scale = 1.0 / math.sqrt(d)
 
     # 1. CPU Reference in FP32
@@ -82,8 +84,12 @@ def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
     has_inf_l = torch.isinf(l_c_cpu).any().item()
 
     print(f"Forward (Time: {t_fwd:.2f} ms):")
-    print(f"  O -> Max Diff: {diff_o.max().item():.5f}, Mean Diff: {diff_o.mean().item():.5f}, Max Rel: {rel_o.max().item():.4f}, NaN/Inf: {has_nan_o}/{has_inf_o}")
-    print(f"  L -> Max Diff: {diff_l.max().item():.5f}, Mean Diff: {diff_l.mean().item():.5f}, Max Rel: {rel_l.max().item():.4f}, NaN/Inf: {has_nan_l}/{has_inf_l}")
+    print(
+        f"  O -> Max Diff: {diff_o.max().item():.5f}, Mean Diff: {diff_o.mean().item():.5f}, Max Rel: {rel_o.max().item():.4f}, NaN/Inf: {has_nan_o}/{has_inf_o}"
+    )
+    print(
+        f"  L -> Max Diff: {diff_l.max().item():.5f}, Mean Diff: {diff_l.mean().item():.5f}, Max Rel: {rel_l.max().item():.4f}, NaN/Inf: {has_nan_l}/{has_inf_l}"
+    )
 
     bwd_res = {}
     if check_bwd:
@@ -103,11 +109,21 @@ def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
         diff_dv = (dv_c_cpu - dv_ref).abs()
 
         print(f"Backward (Time: {t_bwd:.2f} ms):")
-        print(f"  dQ -> Max Diff: {diff_dq.max().item():.5f}, Mean Diff: {diff_dq.mean().item():.5f}")
-        print(f"  dK -> Max Diff: {diff_dk.max().item():.5f}, Mean Diff: {diff_dk.mean().item():.5f}")
-        print(f"  dV -> Max Diff: {diff_dv.max().item():.5f}, Mean Diff: {diff_dv.mean().item():.5f}")
+        print(
+            f"  dQ -> Max Diff: {diff_dq.max().item():.5f}, Mean Diff: {diff_dq.mean().item():.5f}"
+        )
+        print(
+            f"  dK -> Max Diff: {diff_dk.max().item():.5f}, Mean Diff: {diff_dk.mean().item():.5f}"
+        )
+        print(
+            f"  dV -> Max Diff: {diff_dv.max().item():.5f}, Mean Diff: {diff_dv.mean().item():.5f}"
+        )
 
-        bwd_pass = (diff_dq.max().item() < 0.03 and diff_dk.max().item() < 0.03 and diff_dv.max().item() < 0.03)
+        bwd_pass = (
+            diff_dq.max().item() < 0.03
+            and diff_dk.max().item() < 0.03
+            and diff_dv.max().item() < 0.03
+        )
         bwd_res = {
             "dq_max": diff_dq.max().item(),
             "dk_max": diff_dk.max().item(),
@@ -116,10 +132,17 @@ def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
             "t_bwd": t_bwd,
         }
 
-    fwd_pass = (diff_o.max().item() < 0.02 and diff_l.max().item() < 0.02 and not has_nan_o and not has_inf_o)
+    fwd_pass = (
+        diff_o.max().item() < 0.02
+        and diff_l.max().item() < 0.02
+        and not has_nan_o
+        and not has_inf_o
+    )
 
     verdict = fwd_pass and (bwd_res.get("bwd_pass", True))
-    print(f">>> Verdict: {'PASS' if verdict else 'FAIL'} (FWD: {fwd_pass}, BWD: {bwd_res.get('bwd_pass', True)})")
+    print(
+        f">>> Verdict: {'PASS' if verdict else 'FAIL'} (FWD: {fwd_pass}, BWD: {bwd_res.get('bwd_pass', True)})"
+    )
 
     return {
         "name": name,
@@ -132,8 +155,9 @@ def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
         "has_nan": has_nan_o or has_nan_l,
         "has_inf": has_inf_o or has_inf_l,
         "fwd_pass": fwd_pass,
-        **bwd_res
+        **bwd_res,
     }
+
 
 if __name__ == "__main__":
     test_cases = [
@@ -143,7 +167,6 @@ if __name__ == "__main__":
         ("Seq-512", 1, 1, 512, 512, 64, True),
         ("Seq-1024", 1, 1, 1024, 1024, 64, True),
         ("Seq-2048", 1, 1, 2048, 2048, 64, True),
-
         # 2. 真实多头 / 大 Batch 场景 (大模型注意力配置)
         ("LLaMA-Style-H4-N512", 1, 4, 512, 512, 64, True),
         ("LLaMA-Style-H4-N1024", 1, 4, 1024, 1024, 64, True),
@@ -158,17 +181,27 @@ if __name__ == "__main__":
         res = evaluate_accuracy(name, b, h, nq, nk, d, check_bwd)
         results.append(res)
 
-    print("\n" + "="*85)
+    print("\n" + "=" * 85)
     print("                    ACCURACY SUMMARY TABLE")
-    print("="*85)
-    print(f"{'Case Name':<22} | {'Shape':<22} | {'O Max':<8} | {'O Mean':<8} | {'L Max':<8} | {'dQ/dK/dV Max':<15} | {'Verdict'}")
+    print("=" * 85)
+    print(
+        f"{'Case Name':<22} | {'Shape':<22} | {'O Max':<8} | {'O Mean':<8} | {'L Max':<8} | {'dQ/dK/dV Max':<15} | {'Verdict'}"
+    )
     print("-" * 85)
     all_ok = True
     for r in results:
-        bwd_str = f"{r.get('dq_max',0):.4f}/{r.get('dk_max',0):.4f}/{r.get('dv_max',0):.4f}" if 'dq_max' in r else "N/A"
-        pass_str = "PASS" if (r['fwd_pass'] and r.get('bwd_pass', True)) else "FAIL"
+        bwd_str = (
+            f"{r.get('dq_max', 0):.4f}/{r.get('dk_max', 0):.4f}/{r.get('dv_max', 0):.4f}"
+            if "dq_max" in r
+            else "N/A"
+        )
+        pass_str = "PASS" if (r["fwd_pass"] and r.get("bwd_pass", True)) else "FAIL"
         if pass_str == "FAIL":
             all_ok = False
-        print(f"{r['name']:<22} | {r['shape']:<22} | {r['o_max_diff']:<8.5f} | {r['o_mean_diff']:<8.5f} | {r['l_max_diff']:<8.5f} | {bwd_str:<15} | {pass_str}")
-    print("="*85)
-    print(f"Final Accuracy Assessment: {'100% ALL PASSED' if all_ok else 'SOME CASES FAILED'}")
+        print(
+            f"{r['name']:<22} | {r['shape']:<22} | {r['o_max_diff']:<8.5f} | {r['o_mean_diff']:<8.5f} | {r['l_max_diff']:<8.5f} | {bwd_str:<15} | {pass_str}"
+        )
+    print("=" * 85)
+    print(
+        f"Final Accuracy Assessment: {'100% ALL PASSED' if all_ok else 'SOME CASES FAILED'}"
+    )

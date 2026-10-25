@@ -1,4 +1,5 @@
 import os
+
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
@@ -12,7 +13,7 @@ torch.npu.set_device(0)
 torch.manual_seed(42)
 
 N_q, N_k, d = 64, 64, 64
-scale = 1.0 / (d ** 0.5)
+scale = 1.0 / (d**0.5)
 
 print(f"Creating tensors shape ({N_q}, {d})...")
 q_cpu = torch.randn((N_q, d), dtype=torch.float32)
@@ -35,7 +36,7 @@ t0 = time.time()
 o_c, l_c = flash_attention_npu.forward(q_npu, k_npu, v_npu, scale)
 torch.npu.synchronize()
 t1 = time.time()
-print(f"Forward completed in {(t1 - t0)*1000:.2f} ms")
+print(f"Forward completed in {(t1 - t0) * 1000:.2f} ms")
 
 diff_o = (o_c.cpu().float() - o_ref).abs()
 diff_l = (l_c.cpu().float() - l_ref).abs()
@@ -49,7 +50,8 @@ bad_o_rows = []
 for r in range(N_q):
     if row_max_o[r].item() > 0.02:
         bad_o_rows.append(r)
-        print(f"Row {r:2d}: max diff O = {row_max_o[r].item():.5f}, L_custom = {l_c.cpu().float()[r].item():.4f}, L_ref = {l_ref[r].item():.4f}")
+        print(
+            f"Row {r:2d}: max diff O = {row_max_o[r].item():.5f}, L_custom = {l_c.cpu().float()[r].item():.4f}, L_ref = {l_ref[r].item():.4f}"
+        )
 
 print(f"Total bad O rows: {len(bad_o_rows)} / {N_q}")
-

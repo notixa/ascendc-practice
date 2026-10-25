@@ -1,4 +1,5 @@
 import os
+
 os.environ["TE_PARALLEL_COMPILER"] = "1"
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
@@ -13,11 +14,12 @@ import time
 torch.npu.set_device(0)
 torch.manual_seed(42)
 
+
 def test_shape(N_q, N_k, d):
     print(f"\n========================================================")
     print(f"Testing Shape: N_q={N_q}, N_k={N_k}, d={d}")
     print(f"========================================================")
-    scale = 1.0 / (d ** 0.5)
+    scale = 1.0 / (d**0.5)
 
     # 1. CPU Reference (FP32)
     q_cpu = torch.randn((N_q, d), dtype=torch.float32)
@@ -72,9 +74,15 @@ def test_shape(N_q, N_k, d):
     diff_dv_iso = (dv_iso.cpu().float() - dv_ref).abs()
 
     print(f"\nBackward Isolated ({t_bwd_iso:.2f} ms):")
-    print(f"  dQ max diff: {diff_dq_iso.max().item():.5f}, mean: {diff_dq_iso.mean().item():.5f}")
-    print(f"  dK max diff: {diff_dk_iso.max().item():.5f}, mean: {diff_dk_iso.mean().item():.5f}")
-    print(f"  dV max diff: {diff_dv_iso.max().item():.5f}, mean: {diff_dv_iso.mean().item():.5f}")
+    print(
+        f"  dQ max diff: {diff_dq_iso.max().item():.5f}, mean: {diff_dq_iso.mean().item():.5f}"
+    )
+    print(
+        f"  dK max diff: {diff_dk_iso.max().item():.5f}, mean: {diff_dk_iso.mean().item():.5f}"
+    )
+    print(
+        f"  dV max diff: {diff_dv_iso.max().item():.5f}, mean: {diff_dv_iso.mean().item():.5f}"
+    )
 
     # 5. Test Backward (Chained with Custom O, L)
     t0 = time.time()
@@ -89,9 +97,15 @@ def test_shape(N_q, N_k, d):
     diff_dv_c = (dv_c.cpu().float() - dv_ref).abs()
 
     print(f"\nBackward Chained ({t_bwd_c:.2f} ms):")
-    print(f"  dQ max diff: {diff_dq_c.max().item():.5f}, mean: {diff_dq_c.mean().item():.5f}")
-    print(f"  dK max diff: {diff_dk_c.max().item():.5f}, mean: {diff_dk_c.mean().item():.5f}")
-    print(f"  dV max diff: {diff_dv_c.max().item():.5f}, mean: {diff_dv_c.mean().item():.5f}")
+    print(
+        f"  dQ max diff: {diff_dq_c.max().item():.5f}, mean: {diff_dq_c.mean().item():.5f}"
+    )
+    print(
+        f"  dK max diff: {diff_dk_c.max().item():.5f}, mean: {diff_dk_c.mean().item():.5f}"
+    )
+    print(
+        f"  dV max diff: {diff_dv_c.max().item():.5f}, mean: {diff_dv_c.mean().item():.5f}"
+    )
 
     # 6. Detailed dK row analysis
     dk_row_max = diff_dk_iso.max(dim=-1).values
@@ -101,16 +115,23 @@ def test_shape(N_q, N_k, d):
         print(f"    Bad row indices: {bad_rows[:10]}...")
 
     # Verdict
-    fwd_pass = (diff_o.max().item() < 0.02 and diff_l.max().item() < 0.02)
-    bwd_pass = (diff_dq_iso.max().item() < 0.02 and diff_dk_iso.max().item() < 0.02 and diff_dv_iso.max().item() < 0.02)
-    print(f"\n>>> Verdict: FWD {'PASS' if fwd_pass else 'FAIL'}, BWD {'PASS' if bwd_pass else 'FAIL'}")
+    fwd_pass = diff_o.max().item() < 0.02 and diff_l.max().item() < 0.02
+    bwd_pass = (
+        diff_dq_iso.max().item() < 0.02
+        and diff_dk_iso.max().item() < 0.02
+        and diff_dv_iso.max().item() < 0.02
+    )
+    print(
+        f"\n>>> Verdict: FWD {'PASS' if fwd_pass else 'FAIL'}, BWD {'PASS' if bwd_pass else 'FAIL'}"
+    )
     return fwd_pass and bwd_pass
+
 
 def test_shape_multihead(heads, N_q, N_k, d):
     print(f"\n========================================================")
     print(f"Testing Multi-Head Shape: H={heads}, N_q={N_q}, N_k={N_k}, d={d}")
     print(f"========================================================")
-    scale = 1.0 / (d ** 0.5)
+    scale = 1.0 / (d**0.5)
 
     # 1. CPU Reference (FP32)
     q_cpu = torch.randn((heads, N_q, d), dtype=torch.float32)
@@ -146,11 +167,17 @@ def test_shape_multihead(heads, N_q, N_k, d):
     diff_o = (o_c.cpu().float() - o_ref).abs()
     diff_l = (l_c.cpu().float() - l_ref).abs()
 
-    print(f"Forward ({t_fwd:.2f} ms total, {t_fwd/heads:.2f} ms/head):")
-    print(f"  O shape: {list(o_c.shape)}, max diff: {diff_o.max().item():.5f}, mean: {diff_o.mean().item():.5f}")
-    print(f"  L shape: {list(l_c.shape)}, max diff: {diff_l.max().item():.5f}, mean: {diff_l.mean().item():.5f}")
+    print(f"Forward ({t_fwd:.2f} ms total, {t_fwd / heads:.2f} ms/head):")
+    print(
+        f"  O shape: {list(o_c.shape)}, max diff: {diff_o.max().item():.5f}, mean: {diff_o.mean().item():.5f}"
+    )
+    print(
+        f"  L shape: {list(l_c.shape)}, max diff: {diff_l.max().item():.5f}, mean: {diff_l.mean().item():.5f}"
+    )
     for h in range(heads):
-        print(f"    Head {h}: O diff = {diff_o[h].max().item():.5f}, L diff = {diff_l[h].max().item():.5f}")
+        print(
+            f"    Head {h}: O diff = {diff_o[h].max().item():.5f}, L diff = {diff_l[h].max().item():.5f}"
+        )
 
     # 4. Test Native Multi-Head Backward
     t0 = time.time()
@@ -164,15 +191,28 @@ def test_shape_multihead(heads, N_q, N_k, d):
     diff_dk = (dk_c.cpu().float() - dk_ref).abs()
     diff_dv = (dv_c.cpu().float() - dv_ref).abs()
 
-    print(f"\nBackward ({t_bwd:.2f} ms total, {t_bwd/heads:.2f} ms/head):")
-    print(f"  dQ shape: {list(dq_c.shape)}, max diff: {diff_dq.max().item():.5f}, mean: {diff_dq.mean().item():.5f}")
-    print(f"  dK shape: {list(dk_c.shape)}, max diff: {diff_dk.max().item():.5f}, mean: {diff_dk.mean().item():.5f}")
-    print(f"  dV shape: {list(dv_c.shape)}, max diff: {diff_dv.max().item():.5f}, mean: {diff_dv.mean().item():.5f}")
+    print(f"\nBackward ({t_bwd:.2f} ms total, {t_bwd / heads:.2f} ms/head):")
+    print(
+        f"  dQ shape: {list(dq_c.shape)}, max diff: {diff_dq.max().item():.5f}, mean: {diff_dq.mean().item():.5f}"
+    )
+    print(
+        f"  dK shape: {list(dk_c.shape)}, max diff: {diff_dk.max().item():.5f}, mean: {diff_dk.mean().item():.5f}"
+    )
+    print(
+        f"  dV shape: {list(dv_c.shape)}, max diff: {diff_dv.max().item():.5f}, mean: {diff_dv.mean().item():.5f}"
+    )
 
-    fwd_pass = (diff_o.max().item() < 0.02 and diff_l.max().item() < 0.02)
-    bwd_pass = (diff_dq.max().item() < 0.02 and diff_dk.max().item() < 0.02 and diff_dv.max().item() < 0.02)
-    print(f"\n>>> Verdict: FWD {'PASS' if fwd_pass else 'FAIL'}, BWD {'PASS' if bwd_pass else 'FAIL'}")
+    fwd_pass = diff_o.max().item() < 0.02 and diff_l.max().item() < 0.02
+    bwd_pass = (
+        diff_dq.max().item() < 0.02
+        and diff_dk.max().item() < 0.02
+        and diff_dv.max().item() < 0.02
+    )
+    print(
+        f"\n>>> Verdict: FWD {'PASS' if fwd_pass else 'FAIL'}, BWD {'PASS' if bwd_pass else 'FAIL'}"
+    )
     return fwd_pass and bwd_pass
+
 
 if __name__ == "__main__":
     shapes_2d = [

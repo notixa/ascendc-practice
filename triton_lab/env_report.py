@@ -44,10 +44,16 @@ def main():
     # 后端是否存在（上游 triton 只有 nvidia/amd）
     try:
         backend_dir = Path(triton.__file__).parent / "backends"
-        backends = sorted(p.name for p in backend_dir.iterdir() if p.is_dir()) if backend_dir.is_dir() else []
+        backends = (
+            sorted(p.name for p in backend_dir.iterdir() if p.is_dir())
+            if backend_dir.is_dir()
+            else []
+        )
         line("backends", backends or "(未找到 backends 目录)")
         if "ascend" not in backends:
-            print("\n⚠ 没有 ascend 后端：装的是上游 GPU 版 triton，不是 triton-ascend。")
+            print(
+                "\n⚠ 没有 ascend 后端：装的是上游 GPU 版 triton，不是 triton-ascend。"
+            )
     except Exception as e:  # noqa: BLE001
         line("backends", f"检查失败: {e!r}")
 

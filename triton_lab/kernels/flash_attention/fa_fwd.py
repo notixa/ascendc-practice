@@ -1,0 +1,210 @@
+# pyright: reportUnreachable=false, reportArgumentType=false
+# 1) @triton.jit 的 __call__ 永远 raise，pyright 会把后面的代码判成 unreachable；
+# 2) tl.constexpr 是给 Triton 编译器看的标记，运行时就是 int/bool，
+#    pyright 会把它当成独立类型，误报“实参与 constexpr 不兼容”。
+
+import torch
+import torch_npu
+import triton
+import triton.language as tl
+from torch_npu.npu import get_device_properties
+
+
+@triton.jit
+def fla_fwd_kernel(
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    o_ptr,
+    l_ptr,
+    stride_qb,
+    stride_qq,
+    stride_qh,
+    stride_qd,
+    stride_kb,
+    stride_kk,
+    stride_kh,
+    stride_kd,
+    stride_vb,
+    stride_vk,
+    stride_vh,
+    stride_vd,
+    stride_ob,
+    stride_oq,
+    stride_oh,
+    stride_od,
+    stride_lb,
+    stride_lh,
+    stride_lq,
+    batch,
+    N_q,
+    N_k,
+    head,
+    scale,
+    BLOCK_Q: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    EVEN_Q: tl.constexpr,
+    EVEN_K: tl.constexpr,
+):
+    blocks_q = tl.cdiv(N_q, BLOCK_Q)
+    taskNum = batch * head * blocks_q
+    taskIdx = tl.program_id(0)
+    coreNum = tl.num_programs(0)
+    for task in range(taskIdx, taskNum, coreNum):
+        b = task // (head * blocks_q)
+        i = (task % (head * blocks_q)) // head
+        h = (task % (head * blocks_q)) % head
+        q_base = q_ptr + b * stride_qb + h * stride_qh
+        o_base = o_ptr + b * stride_ob + h * stride_oh
+        l_base = l_ptr + b * stride_lb + h * stride_lh
+        k_base = k_ptr + b * stride_kb + h * stride_kh
+        v_base = v_ptr + b * stride_vb + h * stride_vh
+        q_block_ptr = tl.make_block_ptr(
+            q_base,
+            (N_q, HEAD_DIM),
+            strides=(stride_qq, stride_qd),
+            offsets=(i * BLOCK_Q, 0),
+            block_shape=(BLOCK_Q, HEAD_DIM),
+            order=(1, 0),
+        )
+        o_block_ptr = tl.make_block_ptr(
+            o_base,
+            (N_q, HEAD_DIM),
+            strides=(stride_oq, stride_od),
+            offsets=(i * BLOCK_Q, 0),
+            block_shape=(BLOCK_Q, HEAD_DIM),
+            order=(1, 0),
+        )
+        l_block_ptr = tl.make_block_ptr(
+            l_base,
+            (N_q,),
+            strides=(stride_lq,),
+            offsets=(i * BLOCK_Q,),
+            block_shape=(BLOCK_Q,),
+            order=(0,),
+        )
+        k_block_ptr = tl.make_block_ptr(
+            k_base,
+            (N_k, HEAD_DIM),
+            strides=(stride_kk, stride_kd),
+            offsets=(0, 0),
+            block_shape=(BLOCK_K, HEAD_DIM),
+            order=(1, 0),
+        )
+        v_block_ptr = tl.make_block_ptr(
+            v_base,
+            (N_k, HEAD_DIM),
+            strides=(stride_vk, stride_vd),
+            offsets=(0, 0),
+            block_shape=(BLOCK_K, HEAD_DIM),
+            order=(1, 0),
+        )
+        m = tl.full([BLOCK_Q], -float("inf"), dtype=tl.float32)
+        l = tl.zeros([BLOCK_Q], dtype=tl.float32)
+        o = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
+        T_k = tl.cdiv(N_k, BLOCK_K)
+        if EVEN_Q:
+            q = tl.load(q_block_ptr)
+        else:
+            q = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        for j in range(T_k):
+            if EVEN_K:
+                k = tl.load(k_block_ptr)
+                v = tl.load(v_block_ptr)
+                s = tl.dot(q, tl.trans(k)) * scale
+            else:
+                k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                s = tl.dot(q, tl.trans(k)) * scale
+                k_offsets = j * BLOCK_K + tl.arange(0, BLOCK_K)
+                s = tl.where(k_offsets[None, :] < N_k, s, -float("inf"))
+
+            m_prev = m
+            m = tl.maximum(m_prev, tl.max(s, axis=-1))
+            s = tl.exp(s - m[:, None])
+            factor = tl.exp(m_prev - m)
+            l = factor * l + tl.sum(s, axis=-1)
+            o = factor[:, None] * o
+            o = tl.dot(s.to(v.dtype), v, o)
+            k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
+            v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
+        o = o / l[:, None]
+        l = m + tl.log(l)
+        if EVEN_Q:
+            tl.store(o_block_ptr, o.to(o_ptr.dtype.element_ty))
+            tl.store(l_block_ptr, l)
+        else:
+            tl.store(o_block_ptr, o.to(o_ptr.dtype.element_ty), boundary_check=(0, 1))
+            tl.store(l_block_ptr, l, boundary_check=(0,))
+
+
+def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+    assert Q.stride(3) == K.stride(3) == V.stride(3) == 1
+    assert Q.stride(2) == K.stride(2) == V.stride(2)
+    batch = Q.size(dim=0)
+    N_q = Q.size(dim=1)
+    N_k = K.size(dim=1)
+    head = Q.size(dim=2)
+    head_dim = Q.size(dim=3)
+
+    BLOCK_Q = 64
+    BLOCK_K = 64
+
+    if head_dim <= 64:
+        BLOCK_Q = 64
+        BLOCK_K = 128
+    elif head_dim <= 128:
+        BLOCK_Q = 64
+        BLOCK_K = 64
+    elif head_dim <= 256:
+        BLOCK_Q = 32
+        BLOCK_K = 64
+
+    O = torch.zeros_like(Q, device=Q.device)
+    L = torch.zeros([batch, head, N_q], dtype=torch.float32, device=Q.device)
+
+    scale = head_dim**-0.5
+
+    # 带 tl.dot 的 kernel 用 AI Core 数；纯 Vector 算子用 vector_core_num
+    cores = get_device_properties(0).cube_core_num
+
+    taskNum = batch * head * triton.cdiv(N_q, BLOCK_Q)
+    grid = (min(taskNum, cores),)
+    fla_fwd_kernel[grid](
+        Q,
+        K,
+        V,
+        O,
+        L,
+        Q.stride(0),
+        Q.stride(1),
+        Q.stride(2),
+        Q.stride(3),
+        K.stride(0),
+        K.stride(1),
+        K.stride(2),
+        K.stride(3),
+        V.stride(0),
+        V.stride(1),
+        V.stride(2),
+        V.stride(3),
+        O.stride(0),
+        O.stride(1),
+        O.stride(2),
+        O.stride(3),
+        L.stride(0),
+        L.stride(1),
+        L.stride(2),
+        batch,
+        N_q,
+        N_k,
+        head,
+        scale,
+        BLOCK_Q=BLOCK_Q,
+        BLOCK_K=BLOCK_K,
+        HEAD_DIM=head_dim,
+        EVEN_Q=N_q % BLOCK_Q == 0,
+        EVEN_K=N_k % BLOCK_K == 0,
+    )
+    return O, L

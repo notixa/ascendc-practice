@@ -1,4 +1,5 @@
 import os
+
 os.environ["TE_PARALLEL_COMPILER"] = "1"
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
@@ -10,6 +11,7 @@ import torch.nn.functional as F
 
 try:
     import torch_npu
+
     has_npu = torch.npu.is_available()
 except ImportError:
     has_npu = False
@@ -17,8 +19,11 @@ except ImportError:
 try:
     import flash_attention_npu
 except ImportError:
-    print("[ERROR] Cannot import flash_attention_npu module. Please compile via: python3 setup.py build_ext --inplace")
+    print(
+        "[ERROR] Cannot import flash_attention_npu module. Please compile via: python3 setup.py build_ext --inplace"
+    )
     sys.exit(1)
+
 
 class FlashAttentionFunction(torch.autograd.Function):
     @staticmethod
@@ -40,14 +45,16 @@ class FlashAttentionFunction(torch.autograd.Function):
             dq, dk, dv = flash_attention_npu.backward(do, q, k, v, o, l)
         return dq, dk, dv, None
 
+
 def flash_attention(q, k, v, scale=None):
     """PyTorch wrapper with autograd support for Ascend C FlashAttention."""
     return FlashAttentionFunction.apply(q, k, v, scale)
 
+
 def golden_flash_attention(q, k, v, do=None, scale=None):
     d = q.shape[-1]
     if scale is None:
-        scale = 1.0 / (d ** 0.5)
+        scale = 1.0 / (d**0.5)
 
     q_f = q.cpu().float().clone().detach().requires_grad_(True)
     k_f = k.cpu().float().clone().detach().requires_grad_(True)
@@ -65,6 +72,7 @@ def golden_flash_attention(q, k, v, do=None, scale=None):
         return o.half(), l, q_f.grad.half(), k_f.grad.half(), v_f.grad.half()
 
     return o.half(), l
+
 
 def run_test_case(name, N_q, N_k, d, scale=None, atol=2e-2, rtol=2e-2):
     device = "npu:0" if has_npu else "cpu"
@@ -97,23 +105,45 @@ def run_test_case(name, N_q, N_k, d, scale=None, atol=2e-2, rtol=2e-2):
     )
 
     # 4. 误差比对
-    diff_o  = torch.max(torch.abs(o_custom.cpu().float()  - o_golden.cpu().float())).item()
-    diff_l  = torch.max(torch.abs(l_custom.cpu().float()  - l_golden.cpu().float())).item()
-    diff_dq = torch.max(torch.abs(dq_custom.cpu().float() - dq_golden.cpu().float())).item()
-    diff_dk = torch.max(torch.abs(dk_custom.cpu().float() - dk_golden.cpu().float())).item()
-    diff_dv = torch.max(torch.abs(dv_custom.cpu().float() - dv_golden.cpu().float())).item()
+    diff_o = torch.max(
+        torch.abs(o_custom.cpu().float() - o_golden.cpu().float())
+    ).item()
+    diff_l = torch.max(
+        torch.abs(l_custom.cpu().float() - l_golden.cpu().float())
+    ).item()
+    diff_dq = torch.max(
+        torch.abs(dq_custom.cpu().float() - dq_golden.cpu().float())
+    ).item()
+    diff_dk = torch.max(
+        torch.abs(dk_custom.cpu().float() - dk_golden.cpu().float())
+    ).item()
+    diff_dv = torch.max(
+        torch.abs(dv_custom.cpu().float() - dv_golden.cpu().float())
+    ).item()
 
-    passed_o  = torch.allclose(o_custom.cpu().float(),  o_golden.cpu().float(),  atol=atol, rtol=rtol)
-    passed_l  = torch.allclose(l_custom.cpu().float(),  l_golden.cpu().float(),  atol=atol, rtol=rtol)
-    passed_dq = torch.allclose(dq_custom.cpu().float(), dq_golden.cpu().float(), atol=atol, rtol=rtol)
-    passed_dk = torch.allclose(dk_custom.cpu().float(), dk_golden.cpu().float(), atol=atol, rtol=rtol)
-    passed_dv = torch.allclose(dv_custom.cpu().float(), dv_golden.cpu().float(), atol=atol, rtol=rtol)
+    passed_o = torch.allclose(
+        o_custom.cpu().float(), o_golden.cpu().float(), atol=atol, rtol=rtol
+    )
+    passed_l = torch.allclose(
+        l_custom.cpu().float(), l_golden.cpu().float(), atol=atol, rtol=rtol
+    )
+    passed_dq = torch.allclose(
+        dq_custom.cpu().float(), dq_golden.cpu().float(), atol=atol, rtol=rtol
+    )
+    passed_dk = torch.allclose(
+        dk_custom.cpu().float(), dk_golden.cpu().float(), atol=atol, rtol=rtol
+    )
+    passed_dv = torch.allclose(
+        dv_custom.cpu().float(), dv_golden.cpu().float(), atol=atol, rtol=rtol
+    )
 
     passed = passed_o and passed_l and passed_dq and passed_dk and passed_dv
     status = "PASS" if passed else "FAIL"
 
     shape_str = f"Q:[{N_q},{d}], K:[{N_k},{d}]"
-    print(f"{name:<42} | {shape_str:<22} | dO:{diff_o:6.3f} dL:{diff_l:6.3f} | dQ:{diff_dq:6.3f} dK:{diff_dk:6.3f} dV:{diff_dv:6.3f} | {status}")
+    print(
+        f"{name:<42} | {shape_str:<22} | dO:{diff_o:6.3f} dL:{diff_l:6.3f} | dQ:{diff_dq:6.3f} dK:{diff_dk:6.3f} dV:{diff_dv:6.3f} | {status}"
+    )
 
     if not passed:
         print(f"  [FAIL DETAILS]")
@@ -124,14 +154,26 @@ def run_test_case(name, N_q, N_k, d, scale=None, atol=2e-2, rtol=2e-2):
             print(f"    L  custom[:4]: {l_custom.cpu().float().flatten()[:4].tolist()}")
             print(f"    L  golden[:4]: {l_golden.cpu().float().flatten()[:4].tolist()}")
         if not passed_dq:
-            print(f"    dQ custom[:4]: {dq_custom.cpu().float().flatten()[:4].tolist()}")
-            print(f"    dQ golden[:4]: {dq_golden.cpu().float().flatten()[:4].tolist()}")
+            print(
+                f"    dQ custom[:4]: {dq_custom.cpu().float().flatten()[:4].tolist()}"
+            )
+            print(
+                f"    dQ golden[:4]: {dq_golden.cpu().float().flatten()[:4].tolist()}"
+            )
         if not passed_dk:
-            print(f"    dK custom[:4]: {dk_custom.cpu().float().flatten()[:4].tolist()}")
-            print(f"    dK golden[:4]: {dk_golden.cpu().float().flatten()[:4].tolist()}")
+            print(
+                f"    dK custom[:4]: {dk_custom.cpu().float().flatten()[:4].tolist()}"
+            )
+            print(
+                f"    dK golden[:4]: {dk_golden.cpu().float().flatten()[:4].tolist()}"
+            )
         if not passed_dv:
-            print(f"    dV custom[:4]: {dv_custom.cpu().float().flatten()[:4].tolist()}")
-            print(f"    dV golden[:4]: {dv_golden.cpu().float().flatten()[:4].tolist()}")
+            print(
+                f"    dV custom[:4]: {dv_custom.cpu().float().flatten()[:4].tolist()}"
+            )
+            print(
+                f"    dV golden[:4]: {dv_golden.cpu().float().flatten()[:4].tolist()}"
+            )
 
     # 5. 端到端 Autograd 测试
     q_auto = q.clone().detach().requires_grad_(True)
@@ -142,9 +184,15 @@ def run_test_case(name, N_q, N_k, d, scale=None, atol=2e-2, rtol=2e-2):
     loss_auto.backward()
 
     passed_autograd = (
-        torch.allclose(q_auto.grad.cpu().float(), dq_golden.cpu().float(), atol=atol, rtol=rtol) and
-        torch.allclose(k_auto.grad.cpu().float(), dk_golden.cpu().float(), atol=atol, rtol=rtol) and
-        torch.allclose(v_auto.grad.cpu().float(), dv_golden.cpu().float(), atol=atol, rtol=rtol)
+        torch.allclose(
+            q_auto.grad.cpu().float(), dq_golden.cpu().float(), atol=atol, rtol=rtol
+        )
+        and torch.allclose(
+            k_auto.grad.cpu().float(), dk_golden.cpu().float(), atol=atol, rtol=rtol
+        )
+        and torch.allclose(
+            v_auto.grad.cpu().float(), dv_golden.cpu().float(), atol=atol, rtol=rtol
+        )
     )
     if not passed_autograd:
         print(f"  [WARN] Autograd wrapper check failed for {name}")
@@ -152,11 +200,16 @@ def run_test_case(name, N_q, N_k, d, scale=None, atol=2e-2, rtol=2e-2):
 
     return passed
 
+
 def main():
     print("=" * 125)
-    print("   Ascend C FlashAttention Forward & Backward Operator Test Suite (Atlas 200I DK A2 / 310B)")
+    print(
+        "   Ascend C FlashAttention Forward & Backward Operator Test Suite (Atlas 200I DK A2 / 310B)"
+    )
     print("=" * 125)
-    print(f"[INFO] Using Device: {'Ascend NPU' if has_npu else 'CPU (Direct ACL Host Launch)'}")
+    print(
+        f"[INFO] Using Device: {'Ascend NPU' if has_npu else 'CPU (Direct ACL Host Launch)'}"
+    )
     print(f"[INFO] Successfully loaded 'flash_attention_npu' module.\n")
 
     test_cases = [
@@ -176,7 +229,9 @@ def main():
                 all_passed = False
         except Exception as e:
             if "100039" in str(e) or "stub library" in str(e):
-                print(f"[INFO] ACL Stub Environment detected ({e}). Real NPU execution requires running on Atlas board.")
+                print(
+                    f"[INFO] ACL Stub Environment detected ({e}). Real NPU execution requires running on Atlas board."
+                )
                 return
             else:
                 print(f"[ERROR] Exception in test case '{name}': {e}")
@@ -184,10 +239,13 @@ def main():
 
     print("=" * 125)
     if all_passed:
-        print("🎉 All FlashAttention Forward & Backward Test Cases Passed Successfully!")
+        print(
+            "🎉 All FlashAttention Forward & Backward Test Cases Passed Successfully!"
+        )
     else:
         print("❌ Some test cases failed. Please inspect logs above.")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

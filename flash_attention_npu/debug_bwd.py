@@ -1,4 +1,5 @@
 import os
+
 os.environ["TE_PARALLEL_COMPILER"] = "1"
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
@@ -13,7 +14,7 @@ torch.npu.set_device(0)
 torch.manual_seed(42)
 
 N_q, N_k, d = 64, 64, 64
-scale = 1.0 / (d ** 0.5)
+scale = 1.0 / (d**0.5)
 
 q = torch.randn((N_q, d), dtype=torch.half, device="npu:0")
 k = torch.randn((N_k, d), dtype=torch.half, device="npu:0")
@@ -94,4 +95,3 @@ print("Diff against transpose: ", diff_transpose)
 diff_o = (o_custom.cpu().float() - o_ref.float()).abs().max().item()
 diff_l = (l_custom.cpu().float() - l_ref.float()).abs().max().item()
 print(f"\nForward check: max diff O = {diff_o:.5f}, max diff L = {diff_l:.5f}")
-

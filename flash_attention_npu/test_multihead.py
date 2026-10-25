@@ -1,4 +1,5 @@
 import os
+
 os.environ["TE_PARALLEL_COMPILER"] = "1"
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
@@ -13,7 +14,7 @@ import flash_attention_npu
 device = "npu:0"
 H = 8
 N_q, N_k, d = 128, 128, 64
-scale = 1.0 / (d ** 0.5)
+scale = 1.0 / (d**0.5)
 
 print(f"[1] Allocating tensors for {H} heads...", flush=True)
 qs = [torch.randn((N_q, d), dtype=torch.half).to(device) for _ in range(H)]
@@ -41,7 +42,9 @@ print("[4] Running Backward for 8 heads pipelined without synchronize...", flush
 grads = []
 for i in range(H):
     o_i, l_i = outs2[i]
-    grads.append(flash_attention_npu.backward(dos[i], qs[i], ks[i], vs[i], o_i, l_i, scale))
+    grads.append(
+        flash_attention_npu.backward(dos[i], qs[i], ks[i], vs[i], o_i, l_i, scale)
+    )
 torch.npu.synchronize()
 print("  >>> Backward pipelined without sync succeeded!", flush=True)
 

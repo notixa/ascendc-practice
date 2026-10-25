@@ -1,4 +1,5 @@
 import os
+
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
@@ -8,6 +9,7 @@ import torch.nn.functional as F
 
 try:
     import torch_npu
+
     has_npu = torch.npu.is_available()
 except ImportError:
     has_npu = False
@@ -18,10 +20,11 @@ except ImportError:
     print("[ERROR] Cannot import flash_attention_npu module.")
     sys.exit(1)
 
+
 def run_fast_case(N_q, N_k, d, scale=None):
     torch.manual_seed(42)
     if scale is None:
-        scale = 1.0 / (d ** 0.5)
+        scale = 1.0 / (d**0.5)
 
     # 1. CPU Golden computation (Instantaneous, avoids NPU graph compiler!)
     q_cpu = torch.randn((N_q, d), dtype=torch.float32)
@@ -71,14 +74,20 @@ def run_fast_case(N_q, N_k, d, scale=None):
     diff_dv = (dv_custom.cpu().float() - dv_golden).abs().max().item()
 
     print(f"[{N_q}x{N_k}, d={d}] Forward:  max diff O = {diff_o:.5f}, L = {diff_l:.5f}")
-    print(f"[{N_q}x{N_k}, d={d}] Backward: max diff dQ = {diff_dq:.5f}, dK = {diff_dk:.5f}, dV = {diff_dv:.5f}")
+    print(
+        f"[{N_q}x{N_k}, d={d}] Backward: max diff dQ = {diff_dq:.5f}, dK = {diff_dk:.5f}, dV = {diff_dv:.5f}"
+    )
 
     if diff_dk > 0.05:
-        print("  dK custom [:6]: ", [round(x, 4) for x in dk_custom.cpu().float()[0, :6].tolist()])
+        print(
+            "  dK custom [:6]: ",
+            [round(x, 4) for x in dk_custom.cpu().float()[0, :6].tolist()],
+        )
         print("  dK golden [:6]: ", [round(x, 4) for x in dk_golden[0, :6].tolist()])
         # Check transpose
         diff_dkt = (dk_custom.cpu().float() - dk_golden.T).abs().max().item()
         print(f"  dK vs golden.T max diff: {diff_dkt:.5f}")
+
 
 if __name__ == "__main__":
     if has_npu:

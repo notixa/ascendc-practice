@@ -4,6 +4,7 @@ import torch
 
 try:
     import torch_npu
+
     has_npu = torch.npu.is_available()
 except ImportError:
     has_npu = False
@@ -11,12 +12,15 @@ except ImportError:
 try:
     import matmul_npu
 except ImportError:
-    print("[ERROR] Cannot import matmul_npu module. Please compile via: python3 setup.py build_ext --inplace")
+    print(
+        "[ERROR] Cannot import matmul_npu module. Please compile via: python3 setup.py build_ext --inplace"
+    )
     sys.exit(1)
+
 
 def run_test_case(name, M, K, N, atol=2e-3, rtol=1e-3):
     device = "npu:0" if has_npu else "cpu"
-    
+
     # 初始化输入
     torch.manual_seed(42)
     a = torch.randn((M, K), dtype=torch.half, device=device)
@@ -37,17 +41,22 @@ def run_test_case(name, M, K, N, atol=2e-3, rtol=1e-3):
 
     status = "PASS" if passed else "FAIL"
     shape_str = f"[{M}, {K}] x [{K}, {N}]"
-    print(f"{name:<45} | {shape_str:<25} | Max Diff: {max_diff:8.6f} | Status: {status}")
+    print(
+        f"{name:<45} | {shape_str:<25} | Max Diff: {max_diff:8.6f} | Status: {status}"
+    )
     if not passed:
         print(f"  [FAIL DETAILS] Custom sample: {c_custom_cpu[0, :5].tolist()}")
         print(f"                 Golden sample: {c_golden_cpu[0, :5].tolist()}")
     return passed
 
+
 def main():
     print("=" * 95)
     print("        Ascend C MatMul Custom Operator Test Suite (FP16 GEMM)")
     print("=" * 95)
-    print(f"[INFO] Using Device: {'Ascend NPU' if has_npu else 'CPU (Direct ACL Host Launch)'}")
+    print(
+        f"[INFO] Using Device: {'Ascend NPU' if has_npu else 'CPU (Direct ACL Host Launch)'}"
+    )
     print(f"[INFO] Successfully loaded 'matmul_npu' module.\n")
 
     test_cases = [
@@ -73,6 +82,7 @@ def main():
     else:
         print("❌ Some test cases failed. Please inspect logs above.")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

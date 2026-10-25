@@ -10,6 +10,7 @@ from torch.utils.cpp_extension import BuildExtension, CppExtension
 CURRENT_DIR = Path(__file__).parent.resolve()
 BUILD_DIR = CURRENT_DIR / "build"
 
+
 def get_cann_path():
     candidates = [
         os.getenv("ASCEND_HOME_PATH"),
@@ -22,8 +23,10 @@ def get_cann_path():
             return path
     return candidates[2]
 
+
 ASCEND_TOOLKIT_PATH = get_cann_path()
 SOC_VERSION = os.getenv("SOC_VERSION", "Ascend310B1")
+
 
 def get_kernel_lib():
     candidates = [
@@ -34,6 +37,7 @@ def get_kernel_lib():
         if c.exists():
             return str(c)
     return str(candidates[0])
+
 
 def build_kernel_with_cmake():
     """Build Ascend C kernel into static library using CMake and CANN toolchain."""
@@ -48,11 +52,14 @@ def build_kernel_with_cmake():
     ]
     build_cmd = ["cmake", "--build", str(BUILD_DIR), "-j4"]
 
-    print(f"\n[setup.py] >>> Configuring Ascend C kernel via CMake (SOC_VERSION={SOC_VERSION})...")
+    print(
+        f"\n[setup.py] >>> Configuring Ascend C kernel via CMake (SOC_VERSION={SOC_VERSION})..."
+    )
     subprocess.check_call(cmake_cmd)
     print("[setup.py] >>> Building libmatmul_kernel.a with ccec...")
     subprocess.check_call(build_cmd)
     print(f"[setup.py] >>> Ascend C kernel built successfully at {get_kernel_lib()}!\n")
+
 
 class CustomBuildExtension(BuildExtension):
     def run(self):
@@ -61,6 +68,7 @@ class CustomBuildExtension(BuildExtension):
         for ext in self.extensions:
             ext.extra_objects = [get_kernel_lib()]
         super().run()
+
 
 include_dirs = [
     str(CURRENT_DIR / "csrc"),
@@ -79,6 +87,7 @@ extra_link_args = [f"-Wl,-rpath,{cann_lib64}"]
 
 try:
     import torch_npu
+
     torch_npu_dir = os.path.dirname(torch_npu.__file__)
     npu_inc = os.path.join(torch_npu_dir, "include")
     npu_lib = os.path.join(torch_npu_dir, "lib")

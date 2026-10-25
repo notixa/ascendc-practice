@@ -1,4 +1,5 @@
 import os
+
 os.environ["TE_PARALLEL_NUM"] = "1"
 os.environ["TBE_PARALLEL_NUM"] = "1"
 import torch
@@ -10,7 +11,7 @@ torch.npu.set_device(0)
 torch.manual_seed(42)
 
 N_q, N_k, d = 64, 64, 64
-scale = 1.0 / (d ** 0.5)
+scale = 1.0 / (d**0.5)
 
 q = torch.randn((N_q, d), dtype=torch.half, device="npu:0")
 k = torch.randn((N_k, d), dtype=torch.half, device="npu:0")
@@ -38,9 +39,7 @@ dv_golden = v_ref.grad.half()
 o_golden_npu = o_ref.half().to("npu:0")
 l_golden_npu = l_ref.half().to("npu:0")
 
-dq_c, dk_c, dv_c = flash_attention_npu.backward(
-    do, q, k, v, o_golden_npu, l_golden_npu
-)
+dq_c, dk_c, dv_c = flash_attention_npu.backward(do, q, k, v, o_golden_npu, l_golden_npu)
 torch.npu.synchronize()
 
 diff_dk = (dk_c.cpu().float() - dk_golden.float()).abs()
@@ -58,7 +57,13 @@ print(f"\nTotal rows with diff > 0.02: {len(err_rows)} / {N_k}")
 if len(err_rows) > 0:
     first_err = err_rows[0]
     print(f"\nDetails for first error row (row {first_err}):")
-    print("  Custom: ", [round(x, 5) for x in dk_c.cpu().float()[first_err, :8].tolist()])
-    print("  Golden: ", [round(x, 5) for x in dk_golden.float()[first_err, :8].tolist()])
-    ratio = dk_c.cpu().float()[first_err, :8] / (dk_golden.float()[first_err, :8] + 1e-7)
+    print(
+        "  Custom: ", [round(x, 5) for x in dk_c.cpu().float()[first_err, :8].tolist()]
+    )
+    print(
+        "  Golden: ", [round(x, 5) for x in dk_golden.float()[first_err, :8].tolist()]
+    )
+    ratio = dk_c.cpu().float()[first_err, :8] / (
+        dk_golden.float()[first_err, :8] + 1e-7
+    )
     print("  Ratio:  ", [round(x, 4) for x in ratio.tolist()])

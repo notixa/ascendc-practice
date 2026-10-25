@@ -3,6 +3,7 @@ import torch
 import torch_npu
 import flash_attention_npu
 
+
 def main():
     device = "npu:0"
     N = 1024
@@ -27,6 +28,7 @@ def main():
         dq, dk, dv = flash_attention_npu.backward(do, q, k, v, o, l, scale)
     torch.npu.synchronize()
     print("Profiling iterations completed successfully.")
+
 
 if __name__ == "__main__":
     main()
