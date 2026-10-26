@@ -91,12 +91,13 @@ public:
         LayoutS layoutS{B_q, B_k};
         LayoutP layoutP{B_q, B_k};
         LayoutV layoutV{B_k, headDim, headNum * headDim};
-        LayoutOTmp layoutOTmp{B_q, headDim, headNum * headDim};
+        LayoutOTmp layoutOTmp{B_q, headDim};
 
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += AscendC::GetBlockNum()) {
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, B_q, B_k, batchNum, headNum, headDim);
 
-            uint32_t pingpongFlag = 0;
+            uint32_t pingpongFlagQK = 0;
+            uint32_t pingpongFlagPV = 0;
             for (uint32_t j = 0; j <= taskInfo.nDiag; ++j) {
                 uint32_t nIdx = j;
                 uint32_t kRowNum = (B_k < N_k - j * B_k) ? B_k : N_k - j * B_k;
@@ -105,12 +106,13 @@ public:
 
                 GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, headDim};
                 mmadQK(
-                    qGm[taskInfo.qOffset], kGm[kvOffset], sGm, layoutQ, layoutK, layoutS, actualShapeQK, pingpongFlag,
+                    qGm[taskInfo.qOffset], kGm[kvOffset], sGm, layoutQ, layoutK, layoutS, actualShapeQK, pingpongFlagQK,
                     nIdx == 0);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
-                mmadPV(pGm, vGm[kvOffset], oTmpGm, layoutP, layoutV, layoutOTmp, actualShapePV, pingpongFlag, smReady);
+                mmadPV(
+                    pGm, vGm[kvOffset], oTmpGm, layoutP, layoutV, layoutOTmp, actualShapePV, pingpongFlagPV, smReady);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
             }
         }
@@ -121,11 +123,6 @@ public:
     {
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0);
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID2);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID3);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID2);
@@ -180,11 +177,6 @@ public:
         }
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID2);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID3);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID2);
