@@ -46,6 +46,7 @@ def fla_fwd_kernel(
     HEAD_DIM: tl.constexpr,
     EVEN_Q: tl.constexpr,
     EVEN_K: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
 ):
     blocks_q = tl.cdiv(N_q, BLOCK_Q)
     taskNum = batch * head * blocks_q
@@ -100,10 +101,12 @@ def fla_fwd_kernel(
             block_shape=(BLOCK_K, HEAD_DIM),
             order=(1, 0),
         )
-        m = tl.full([BLOCK_Q], -float("inf"), dtype=tl.float32)
+        m = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
         l = tl.zeros([BLOCK_Q], dtype=tl.float32)
         o = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
         T_k = tl.cdiv(N_k, BLOCK_K)
+        if IS_CAUSAL:
+            T_k = tl.cdiv((i + 1) * BLOCK_Q - 1, BLOCK_K)
         if EVEN_Q:
             q = tl.load(q_block_ptr)
         else:
@@ -119,7 +122,10 @@ def fla_fwd_kernel(
                 s = tl.dot(q, tl.trans(k)) * scale
                 k_offsets = j * BLOCK_K + tl.arange(0, BLOCK_K)
                 s = tl.where(k_offsets[None, :] < N_k, s, -float("inf"))
-
+            if IS_CAUSAL:
+                q_idx = i * BLOCK_Q + tl.arange(0, BLOCK_Q)
+                k_idx = j * BLOCK_K + tl.arange(0, BLOCK_K)
+                s = tl.where(k_idx[None, :] <= q_idx[:, None], s, -float("inf"))
             m_prev = m
             m = tl.maximum(m_prev, tl.max(s, axis=-1))
             s = tl.exp(s - m[:, None])
@@ -139,7 +145,18 @@ def fla_fwd_kernel(
             tl.store(l_block_ptr, l, boundary_check=(0,))
 
 
-def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+def base_tile(head_dim, n_q, n_k):
+    bk = min(128, ((n_k + 15) // 16) * 16)  # ceil16(S_K)，不超 128
+    bq = 64
+    while bq * bk > 8192 and bq > 32:  # scores 32KB 预算
+        bq //= 2
+    bd = ((head_dim + 15) // 16) * 16  # ceil16，不是 next_pow2
+    while bq * bd * 2 > 64 * 1024 and bq > 32:  # q tile 64KB 预算
+        bq //= 2
+    return bq, bk, bd
+
+
+def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     assert Q.stride(3) == K.stride(3) == V.stride(3) == 1
     assert Q.stride(2) == K.stride(2) == V.stride(2)
     batch = Q.size(dim=0)
@@ -148,18 +165,7 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
     head = Q.size(dim=2)
     head_dim = Q.size(dim=3)
 
-    BLOCK_Q = 64
-    BLOCK_K = 64
-
-    if head_dim <= 64:
-        BLOCK_Q = 64
-        BLOCK_K = 128
-    elif head_dim <= 128:
-        BLOCK_Q = 64
-        BLOCK_K = 64
-    elif head_dim <= 256:
-        BLOCK_Q = 32
-        BLOCK_K = 64
+    BLOCK_Q, BLOCK_K, HEAD_DIM = base_tile(head_dim, N_q, N_k)
 
     O = torch.zeros_like(Q, device=Q.device)
     L = torch.zeros([batch, head, N_q], dtype=torch.float32, device=Q.device)
@@ -169,8 +175,7 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
     # 带 tl.dot 的 kernel 用 AI Core 数；纯 Vector 算子用 vector_core_num
     cores = get_device_properties(0).cube_core_num
 
-    taskNum = batch * head * triton.cdiv(N_q, BLOCK_Q)
-    grid = (min(taskNum, cores),)
+    grid = lambda meta: (min(batch * head * triton.cdiv(N_q, meta["BLOCK_Q"]), cores),)
     fla_fwd_kernel[grid](
         Q,
         K,
@@ -203,8 +208,9 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
         scale,
         BLOCK_Q=BLOCK_Q,
         BLOCK_K=BLOCK_K,
-        HEAD_DIM=head_dim,
+        HEAD_DIM=HEAD_DIM,
         EVEN_Q=N_q % BLOCK_Q == 0,
         EVEN_K=N_k % BLOCK_K == 0,
+        IS_CAUSAL=causal,
     )
     return O, L

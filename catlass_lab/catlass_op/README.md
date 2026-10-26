@@ -83,13 +83,14 @@ Python 接口：
 import torch, torch_npu
 torch.ops.load_library("build/libcatlass_fat.so")
 
-o = torch.ops.catlass.fat(q, k, v, scale, batch, block_dim)
+o = torch.ops.catlass.fat(q, k, v, mask, scale, batch, block_dim)
 
 # q/k/v 支持两种布局（内存排布都是 token-major，返回形状与 q 一致）：
 #   3-D: [batch*N_q, heads, head_dim]      → batch 必须显式传（>=1）
 #   4-D: [batch, N_q, heads, head_dim]     → batch 可传 0，从 q.size(0) 推出
 # 4-D 在 host 侧 reshape 成 3-D，连续张量上零拷贝。
 #
+# mask  : [>=128, >=128] fp16, contiguous, 1=屏蔽（triu(diagonal=1)）
 # scale : float，通常 1/sqrt(head_dim)
 # block_dim : int，0 = 自动（min(numTask, AIC 核数)）
 ```
@@ -101,7 +102,8 @@ o = torch.ops.catlass.fat(q, k, v, scale, batch, block_dim)
 - `N_q == N_k`（causal、无 chunk）—— `test_fat.py` 的 case 都满足
 - 3-D 时 `batch` 必填；4-D 时可以传 0 自动推断
 - 只有 forward，没有 autograd
-- 没有 mask（做的是 **full attention**，不是 causal）→ 所以 **golden 也要用 causal=False**
+- **必须传 mask**（causal）：`[>=128, >=128]` 的 fp16 上三角表，`1` = 屏蔽，`diagonal=1`（自己看自己保留）
+- mask 的坐标是"相对对角块起点"，所以一张 128x128 表服务所有 q block；列起点恒为 0，表不能被裁剪
 
 ---
 

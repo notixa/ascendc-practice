@@ -43,46 +43,46 @@ namespace fat {
 // ---------------------------------------------------------------------------
 //   注意：S 与 oTemp 必须是 float（epilogue 里直接 DataCopy 进 LocalTensor<float>）
 //         P 必须与输入同精度（要喂给 Cube 的 P·V）
-using ElementQ     = half;
-using LayoutQ      = layout::RowMajor;
+using ElementQ = half;
+using LayoutQ = layout::RowMajor;
 
-using ElementK     = half;
-using LayoutK      = layout::ColumnMajor;   // 借列主序表达 K^T，零拷贝转置
+using ElementK = half;
+using LayoutK = layout::ColumnMajor; // 借列主序表达 K^T，零拷贝转置
 
-using ElementV     = half;
-using LayoutV      = layout::RowMajor;
+using ElementV = half;
+using LayoutV = layout::RowMajor;
 
-using ElementS     = float;
-using LayoutS      = layout::RowMajor;
+using ElementS = float;
+using LayoutS = layout::RowMajor;
 
-using ElementP     = half;
-using LayoutP      = layout::RowMajor;
+using ElementP = half;
+using LayoutP = layout::RowMajor;
 
-using ElementO     = half;
-using LayoutO      = layout::RowMajor;
+using ElementO = half;
+using LayoutO = layout::RowMajor;
 
-using ElementOTmp  = float;
-using LayoutOTmp   = layout::RowMajor;
+using ElementOTmp = float;
+using LayoutOTmp = layout::RowMajor;
 
-using ElementMask  = half;                  // 必须 2 字节：epilogue 里字节数写死 *2
-using LayoutMask   = layout::RowMajor;      // 必须 RowMajor：只取 stride(0)
+using ElementMask = half;            // 必须 2 字节：epilogue 里字节数写死 *2
+using LayoutMask = layout::RowMajor; // 必须 RowMajor：只取 stride(0)
 
-using ElementOUpdate = float;               // 死参数（对应死掉的 oUpdate GM 缓冲），填合法值即可
-using LayoutOUpdate  = layout::RowMajor;
+using ElementOUpdate = float; // 死参数（对应死掉的 oUpdate GM 缓冲），填合法值即可
+using LayoutOUpdate = layout::RowMajor;
 
 using ArchTag = Catlass::Arch::AtlasA2;
 
 // ---------------------------------------------------------------------------
 // 2. GemmType 包装
 // ---------------------------------------------------------------------------
-using QType       = Catlass::Gemm::GemmType<ElementQ, LayoutQ>;
-using KType       = Catlass::Gemm::GemmType<ElementK, LayoutK>;
-using VType       = Catlass::Gemm::GemmType<ElementV, LayoutV>;
-using SType       = Catlass::Gemm::GemmType<ElementS, LayoutS>;
-using PType       = Catlass::Gemm::GemmType<ElementP, LayoutP>;
-using OType       = Catlass::Gemm::GemmType<ElementO, LayoutO>;
-using OTempType   = Catlass::Gemm::GemmType<ElementOTmp, LayoutOTmp>;
-using MaskType    = Catlass::Gemm::GemmType<ElementMask, LayoutMask>;
+using QType = Catlass::Gemm::GemmType<ElementQ, LayoutQ>;
+using KType = Catlass::Gemm::GemmType<ElementK, LayoutK>;
+using VType = Catlass::Gemm::GemmType<ElementV, LayoutV>;
+using SType = Catlass::Gemm::GemmType<ElementS, LayoutS>;
+using PType = Catlass::Gemm::GemmType<ElementP, LayoutP>;
+using OType = Catlass::Gemm::GemmType<ElementO, LayoutO>;
+using OTempType = Catlass::Gemm::GemmType<ElementOTmp, LayoutOTmp>;
+using MaskType = Catlass::Gemm::GemmType<ElementMask, LayoutMask>;
 using OUpdateType = Catlass::Gemm::GemmType<ElementOUpdate, LayoutOUpdate>;
 
 // ---------------------------------------------------------------------------
@@ -106,25 +106,24 @@ using L0TileShapePV = Catlass::GemmShape<128, 128, 64>;
 using DispatchPolicyQK = Catlass::Gemm::MmadAtlasA2FAQK;
 using DispatchPolicyPV = Catlass::Gemm::MmadAtlasA2FAPV;
 
-using BlockMmadQK = Catlass::Gemm::Block::BlockMmad<
-    DispatchPolicyQK, L1TileShapeQK, L0TileShapeQK, QType, KType, SType>;
-using BlockMmadPV = Catlass::Gemm::Block::BlockMmad<
-    DispatchPolicyPV, L1TileShapePV, L0TileShapePV, PType, VType, OTempType>;
+using BlockMmadQK =
+    Catlass::Gemm::Block::BlockMmad<DispatchPolicyQK, L1TileShapeQK, L0TileShapeQK, QType, KType, SType>;
+using BlockMmadPV =
+    Catlass::Gemm::Block::BlockMmad<DispatchPolicyPV, L1TileShapePV, L0TileShapePV, PType, VType, OTempType>;
 
 // 配对：OnlineSoftmax（S→P，产出 dm/gl 到 UB） + RescaleO（oTemp→O，读 dm/gl）
 //   换成 _FD 变体时必须同时换成 CombineScale，不能单换一个
 using DispatchPolicyOnlineSoftmax = Catlass::Epilogue::EpilogueAtlasA2OnlineSoftmax;
-using DispatchPolicyRescaleO      = Catlass::Epilogue::EpilogueAtlasA2RescaleO;
+using DispatchPolicyRescaleO = Catlass::Epilogue::EpilogueAtlasA2RescaleO;
 
-using BlockEpilogueOnlineSoftmax = Catlass::Epilogue::Block::BlockEpilogue<
-    DispatchPolicyOnlineSoftmax, PType, SType, MaskType>;
-using BlockEpilogueRescaleO = Catlass::Epilogue::Block::BlockEpilogue<
-    DispatchPolicyRescaleO, OType, OTempType, OUpdateType>;
+using BlockEpilogueOnlineSoftmax =
+    Catlass::Epilogue::Block::BlockEpilogue<DispatchPolicyOnlineSoftmax, PType, SType, MaskType>;
+using BlockEpilogueRescaleO =
+    Catlass::Epilogue::Block::BlockEpilogue<DispatchPolicyRescaleO, OType, OTempType, OUpdateType>;
 
 // ---------------------------------------------------------------------------
 // 5. 最终实例化
 // ---------------------------------------------------------------------------
-using FatKernelType = FATKernel<
-    BlockMmadQK, BlockMmadPV, BlockEpilogueOnlineSoftmax, BlockEpilogueRescaleO>;
+using FatKernelType = FATKernel<BlockMmadQK, BlockMmadPV, BlockEpilogueOnlineSoftmax, BlockEpilogueRescaleO>;
 
 } // namespace fat

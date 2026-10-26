@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <cstdint>
 #include "catlass/arch/arch.hpp"
 #include "catlass/arch/cross_core_sync.hpp"
@@ -94,13 +93,14 @@ public:
         LayoutOTmp layoutOTmp{B_q, headDim};
 
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += AscendC::GetBlockNum()) {
-            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, B_q, B_k, batchNum, headNum, headDim);
+            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, B_q, B_k, headNum, headDim);
 
             uint32_t pingpongFlagQK = 0;
             uint32_t pingpongFlagPV = 0;
             for (uint32_t j = 0; j <= taskInfo.nDiag; ++j) {
                 uint32_t nIdx = j;
-                uint32_t kRowNum = (B_k < N_k - j * B_k) ? B_k : N_k - j * B_k;
+                uint32_t visibleEnd = taskInfo.i * B_q + taskInfo.qRowNum;
+                uint32_t kRowNum = (B_k < visibleEnd - j * B_k) ? B_k : visibleEnd - j * B_k;
                 uint32_t kvOffset =
                     taskInfo.b * N_k * headNum * headDim + nIdx * B_k * headNum * headDim + taskInfo.h * headDim;
 
@@ -136,7 +136,6 @@ public:
         uint32_t B_k = t->B_k;
         uint32_t headNum = t->head_num;
         uint32_t headDim = t->head_dim;
-        uint32_t dPerHead = t->head_dim;
         uint32_t batchNum = t->batch_num;
 
         BlockEpilogueOnlineSoftmax_ onlineSoftmax(resource, scaleValue);
@@ -146,30 +145,41 @@ public:
         GlobalTensor<ElementP> pGm;
         GlobalTensor<ElementOTmp> oTmpGm;
         GlobalTensor<ElementO> oGm;
+        GlobalTensor<ElementMask> maskGm;
         sGm.SetGlobalBuffer((__gm__ ElementS*)params.s);
         pGm.SetGlobalBuffer((__gm__ ElementP*)params.p);
         oTmpGm.SetGlobalBuffer((__gm__ ElementOTmp*)params.oTemp);
         oGm.SetGlobalBuffer((__gm__ ElementO*)params.o);
+        maskGm.SetGlobalBuffer((__gm__ ElementMask*)params.mask);
 
         LayoutS layoutS{B_q, B_k};
         LayoutP layoutP{B_q, B_k};
-        LayoutO layoutO{B_q, dPerHead, dPerHead * headNum};
-        LayoutOTmp layoutOTmp{B_q, dPerHead};
+        LayoutO layoutO{B_q, headDim * headNum, headDim * headNum};
+        LayoutOTmp layoutOTmp{B_q, headDim};
+        LayoutMask layoutMask{B_q, B_k, B_k};
 
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < t->numTask; taskIdx += AscendC::GetBlockNum()) {
-            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, B_q, B_k, batchNum, headNum, headDim);
-
+            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, B_q, B_k, headNum, headDim);
+            uint32_t oOffset =
+                taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
             for (uint32_t j = 0; j <= taskInfo.nDiag; ++j) {
-                uint32_t kRowNum = (B_k < N_k - j * B_k) ? B_k : N_k - j * B_k;
-                uint32_t oOffset = taskInfo.b * N_q * headNum * dPerHead + taskInfo.i * B_q * headNum * dPerHead +
-                                   taskInfo.h * dPerHead;
-                Arch::CrossCoreWaitFlag(qkReady);
-                GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, dPerHead};
-                onlineSoftmax(
-                    pGm, sGm, layoutP, layoutS, onlineSoftmaxShape, (j == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
+                bool isDiag = (j == taskInfo.nDiag);
+                uint32_t visibleEnd = taskInfo.i * B_q + taskInfo.qRowNum;
+                uint32_t kRowNum = (B_k < visibleEnd - j * B_k) ? B_k : visibleEnd - j * B_k;
+
+                GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, headDim};
+                if (isDiag) {
+                    onlineSoftmax(
+                        pGm, sGm, maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape, (j == 0) ? 1u : 0u,
+                        taskInfo.qRowNum, 1u, 0u, qkReady);
+                } else {
+                    Arch::CrossCoreWaitFlag(qkReady);
+                    onlineSoftmax(
+                        pGm, sGm, layoutP, layoutS, onlineSoftmaxShape, (j == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
+                }
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
                 Arch::CrossCoreWaitFlag(pvReady);
-                GemmCoord rescaleOShape{taskInfo.qRowNum, dPerHead, kRowNum};
+                GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm, layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u, (j == 0) ? 1u : 0u,
                     j == taskInfo.nDiag, 0u);
@@ -198,9 +208,7 @@ private:
     Arch::CrossCoreFlag pvReady{PV_READY_ID};
 
 private:
-    TaskInfo DecodeTask(
-        uint32_t taskIdx, uint32_t N_q, uint32_t B_q, uint32_t B_k, uint32_t batchNum, uint32_t headNum,
-        uint32_t headDim)
+    TaskInfo DecodeTask(uint32_t taskIdx, uint32_t N_q, uint32_t B_q, uint32_t B_k, uint32_t headNum, uint32_t headDim)
     {
         TaskInfo info;
         uint32_t blocksPerBatch = (N_q + B_q - 1) / B_q;

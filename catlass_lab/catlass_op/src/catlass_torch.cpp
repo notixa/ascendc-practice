@@ -11,6 +11,10 @@
  *   3-D: [B*N_q, H, D]
  *   4-D: [B, N_q, H, D]      → reshape 成 3-D（连续张量上零拷贝）
  *
+ * mask：必须显式传入一张 [>=128, >=128] 的 fp16 上三角表（1 = 屏蔽）。
+ *   kernel 只在对角块用它，坐标是"相对对角块起点"，所以一张 128x128 表
+ *   可以服务所有 q block（平移不变性）。列起点恒为 0，故表不能被裁剪过。
+ *
  * 不做的事（这是 FA 相对 matmul 模板的差异）：
  *   - 没有 Kernel::Arguments / ToUnderlyingArguments / GetWorkspaceSize，
  *     因为 FATKernel 只暴露 operator()(FATParams)，workspace 由这里手算
@@ -47,7 +51,7 @@ static constexpr int64_t B_Q = 128;
 static constexpr int64_t B_K = 128;
 
 at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
-               double scale, int64_t batch, int64_t blockDim)
+               const at::Tensor& mask, double scale, int64_t batch, int64_t blockDim)
 {
     // ---------------- 1. 基础校验 ----------------
     TORCH_CHECK(q.device().type() == c10::DeviceType::PrivateUse1, "q must be on NPU");
@@ -58,6 +62,18 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     TORCH_CHECK(v.scalar_type() == at::kHalf, "only float16 is supported");
     TORCH_CHECK(q.dim() == 3 || q.dim() == 4,
                 "q must be [B*N_q, H, D] or [B, N_q, H, D], got rank ", q.dim());
+
+    // mask：1 = 屏蔽（上三角，diagonal=1），0 = 保留；dtype 必须 2 字节
+    // 源码里 epilogue 用 (maskStride - columnNum) * 2 和 columnNum * 2 硬编码 2 字节，
+    // 且列起点恒为 0（表须对齐对角块起点），故这里只校验 shape/stride/dtype。
+    TORCH_CHECK(mask.defined(), "mask tensor is required (this kernel is causal)");
+    TORCH_CHECK(mask.device().type() == c10::DeviceType::PrivateUse1, "mask must be on NPU");
+    TORCH_CHECK(mask.device() == q.device(), "mask must be on the same device as q");
+    TORCH_CHECK(mask.scalar_type() == at::kHalf, "mask must be float16 (2 bytes)");
+    TORCH_CHECK(mask.dim() == 2, "mask must be 2-D [rows, cols]");
+    TORCH_CHECK(mask.is_contiguous(), "mask must be contiguous");
+    TORCH_CHECK(mask.size(0) >= B_Q && mask.size(1) >= B_K,
+                "mask must be at least ", B_Q, "x", B_K, ", got ", mask.size(0), "x", mask.size(1));
 
     // ---------------- 2. 归一化成 3-D [tokens, heads, head_dim] ----------------
     // 连续张量上 reshape 只改元数据，不拷贝
@@ -144,7 +160,7 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
                  reinterpret_cast<uint8_t*>(q3.data_ptr()),
                  reinterpret_cast<uint8_t*>(k3.data_ptr()),
                  reinterpret_cast<uint8_t*>(v3.data_ptr()),
-                 static_cast<uint8_t*>(nullptr), // mask：本版 kernel 不做 mask
+                 reinterpret_cast<uint8_t*>(mask.data_ptr()), // 1 = 屏蔽（上三角）
                  reinterpret_cast<uint8_t*>(o3.data_ptr()),
                  reinterpret_cast<uint8_t*>(sDev.data_ptr()),
                  reinterpret_cast<uint8_t*>(pDev.data_ptr()),
@@ -159,7 +175,7 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
 
 TORCH_LIBRARY(catlass, m)
 {
-    m.def("fat(Tensor q, Tensor k, Tensor v, float scale, int batch, int blockDim) -> Tensor");
+    m.def("fat(Tensor q, Tensor k, Tensor v, Tensor mask, float scale, int batch, int blockDim) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(catlass, PrivateUse1, m)
