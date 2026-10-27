@@ -29,8 +29,8 @@
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 #include <torch_npu/csrc/framework/utils/CalcuOpUtil.h>
 #include <torch_npu/csrc/framework/utils/OpAdapter.h>
-#include <acl/acl.h>      // AclAPI 总入口
-#include <acl/acl_rt.h>   // aclrtGetHardwareSyncAddr（显式再引一次，防止被精简版 acl.h 遮蔽）
+#include <acl/acl.h>      // AclAPI 总入口（类型/错误码）
+#include <dlfcn.h>        // dlsym：绕开 aclrtGetHardwareSyncAddr 的头文件可见性问题
 #include <tiling/platform/platform_ascendc.h>
 
 #include <algorithm>
@@ -38,6 +38,37 @@
 
 #include "catlass_kernel.h"
 #include "fat_tiling.h"   // 只含 FATTiling（纯 POD）；FATParams 是设备侧的，不要在这里引
+
+namespace {
+
+// aclrtGetHardwareSyncAddr 在不同 CANN 版本 / 不同 acl 头里的可见性不稳定
+// （torch_npu 也自带一份精简 acl 头，会遮蔽真声明）。它本身是 libascendcl 导出的
+// C 符号，所以直接用 dlsym 取，绕开编译期头文件差异。
+// 拿不到就明确报错 —— 传 0 会让 AIC/AIV 的跨核 flag 落在错误的同步区（表现为 kernel 卡死）。
+uint64_t GetHardwareSyncAddrOrThrow()
+{
+    using Fn = int (*)(void**);          // aclError(*)(void**)，ACL_SUCCESS == 0
+    static Fn fn = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        fn = reinterpret_cast<Fn>(dlsym(RTLD_DEFAULT, "aclrtGetHardwareSyncAddr"));
+        if (fn == nullptr) {
+            void* h = dlopen("libascendcl.so", RTLD_NOW | RTLD_GLOBAL);
+            if (h != nullptr) {
+                fn = reinterpret_cast<Fn>(dlsym(h, "aclrtGetHardwareSyncAddr"));
+            }
+        }
+    }
+    TORCH_CHECK(fn != nullptr,
+                "dlsym(aclrtGetHardwareSyncAddr) 失败：拿不到 AIC<->AIV 同步基地址。"
+                "请确认 libascendcl.so 已加载（import torch_npu 之后才有）。");
+    uint64_t addr = 0;
+    TORCH_CHECK(fn(reinterpret_cast<void**>(&addr)) == 0, "aclrtGetHardwareSyncAddr 返回失败");
+    return addr;
+}
+
+} // namespace
 
 #define RUN_NPU_FUNC(func, ...)                                                                                    \
     do {                                                                                                           \
@@ -166,9 +197,7 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     void* stream = nullptr;
 
     // ★ AIC<->AIV 跨核 flag 的硬件同步基地址（fai.cpp 同样要做）
-    uint64_t hwSyncAddr = 0;
-    TORCH_CHECK(aclrtGetHardwareSyncAddr(reinterpret_cast<void**>(&hwSyncAddr)) == ACL_SUCCESS,
-                "aclrtGetHardwareSyncAddr failed");
+    const uint64_t hwSyncAddr = GetHardwareSyncAddrOrThrow();
 
     RUN_NPU_FUNC(catlass_kernel::fat, hwSyncAddr, static_cast<uint32_t>(blockDim), stream,
                  reinterpret_cast<uint8_t*>(q3.data_ptr()),

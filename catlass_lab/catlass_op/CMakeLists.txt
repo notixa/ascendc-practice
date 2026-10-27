@@ -117,4 +117,5 @@ target_link_libraries(catlass_fat
   runtime
   ascendcl
   tiling_api
-  platform)
+  platform
+  dl)
