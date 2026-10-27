@@ -34,6 +34,14 @@ option(FAT_NO_SYNC "Drop AIV cross-core waits (debug: is AIV scheduled?)" OFF)
 # 调试用：AIC 只做 QK，跳过 PV（配合 FAT_ENABLE_PRINT 用）
 # 目的：确认「QK + AIV softmax」这条链路是否完全正常，把问题隔离在 PV
 option(FAT_QK_ONLY "AIC does QK only, skip PV (debug)" OFF)
+
+# 调试用：在自己的 include 目录里放了一份带插桩的 block_mmad_fa_pv.hpp，
+# 用 include 路径优先来「影子替换」CATLASS 原版（不改 CATLASS 仓库）
+option(FAT_TRACE_PV "Use shadowed block_mmad_fa_pv.hpp with step traces (debug)" OFF)
+if(FAT_TRACE_PV)
+  message(STATUS "shadowed FAPV header with traces: ON")
+  add_compile_definitions(FAT_TRACE_PV=1)
+endif()
 if(FAT_QK_ONLY)
   message(STATUS "QK only (PV skipped)")
   add_compile_definitions(FAT_QK_ONLY=1)
