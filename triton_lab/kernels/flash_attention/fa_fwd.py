@@ -56,7 +56,7 @@ def fla_fwd_kernel(
     coreNum = tl.num_programs(0)
     for task in range(taskIdx, taskNum, coreNum):
         b = task // (head * blocks_q)
-        i = blocks_q - ((task % (head * blocks_q)) // head)
+        i = blocks_q - 1 - ((task % (head * blocks_q)) // head)
         h = (task % (head * blocks_q)) % head
         q_base = q_ptr + b * stride_qb + h * stride_qh
         o_base = o_ptr + b * stride_ob + h * stride_oh
