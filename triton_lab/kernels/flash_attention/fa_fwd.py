@@ -41,12 +41,14 @@ def fla_fwd_kernel(
     N_k,
     head,
     scale,
+    delta_qk,
     BLOCK_Q: tl.constexpr,
     BLOCK_K: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     EVEN_Q: tl.constexpr,
     EVEN_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    MULTI_BLOCK: tl.constexpr,
 ):
     blocks_q = tl.cdiv(N_q, BLOCK_Q)
     taskNum = batch * head * blocks_q
@@ -54,7 +56,7 @@ def fla_fwd_kernel(
     coreNum = tl.num_programs(0)
     for task in range(taskIdx, taskNum, coreNum):
         b = task // (head * blocks_q)
-        i = (task % (head * blocks_q)) // head
+        i = blocks_q - ((task % (head * blocks_q)) // head)
         h = (task % (head * blocks_q)) % head
         q_base = q_ptr + b * stride_qb + h * stride_qh
         o_base = o_ptr + b * stride_ob + h * stride_oh
@@ -104,22 +106,27 @@ def fla_fwd_kernel(
         m = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
         l = tl.zeros([BLOCK_Q], dtype=tl.float32)
         o = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
-        T_k = tl.cdiv(N_k, BLOCK_K)
+        T_k_full = tl.cdiv(N_k, BLOCK_K)
         if IS_CAUSAL:
-            T_k = tl.cdiv((i + 1) * BLOCK_Q - 1, BLOCK_K)
-        if EVEN_Q:
-            q = tl.load(q_block_ptr)
+            T_k = tl.minimum(tl.cdiv((i + 1) * BLOCK_Q + delta_qk, BLOCK_K), T_k_full)
         else:
-            q = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
+            T_k = T_k_full
+        if EVEN_Q:
+            q = tl.load(q_block_ptr) * scale
+        else:
+            q = (
+                tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                * scale
+            )
         for j in range(T_k):
             if EVEN_K:
                 k = tl.load(k_block_ptr)
                 v = tl.load(v_block_ptr)
-                s = tl.dot(q, tl.trans(k)) * scale
+                s = tl.dot(q, tl.trans(k))
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                s = tl.dot(q, tl.trans(k)) * scale
+                s = tl.dot(q, tl.trans(k))
                 k_offsets = j * BLOCK_K + tl.arange(0, BLOCK_K)
                 s = tl.where(k_offsets[None, :] < N_k, s, -float("inf"))
             if IS_CAUSAL:
@@ -127,7 +134,12 @@ def fla_fwd_kernel(
                 k_idx = j * BLOCK_K + tl.arange(0, BLOCK_K)
                 s = tl.where(k_idx[None, :] <= q_idx[:, None], s, -float("inf"))
             m_prev = m
-            m = tl.maximum(m_prev, tl.max(s, axis=-1))
+            if MULTI_BLOCK:
+                m = tl.maximum(
+                    m_prev, tl.max(s, axis=-1), propagate_nan=tl.PropagateNan.ALL
+                )
+            else:
+                m = tl.maximum(m_prev, tl.max(s, axis=-1))
             s = tl.exp(s - m[:, None])
             factor = tl.exp(m_prev - m)
             l = factor * l + tl.sum(s, axis=-1)
@@ -175,6 +187,10 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     # 带 tl.dot 的 kernel 用 AI Core 数；纯 Vector 算子用 vector_core_num
     cores = get_device_properties(0).cube_core_num
 
+    multi_block = (N_k + BLOCK_K - 1) // BLOCK_K > 1
+
+    delta_qk = N_k - N_q
+
     grid = lambda meta: (min(batch * head * triton.cdiv(N_q, meta["BLOCK_Q"]), cores),)
     fla_fwd_kernel[grid](
         Q,
@@ -206,11 +222,13 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         N_k,
         head,
         scale,
+        delta_qk=delta_qk,
         BLOCK_Q=BLOCK_Q,
         BLOCK_K=BLOCK_K,
         HEAD_DIM=HEAD_DIM,
         EVEN_Q=N_q % BLOCK_Q == 0,
         EVEN_K=N_k % BLOCK_K == 0,
         IS_CAUSAL=causal,
+        MULTI_BLOCK=multi_block,
     )
     return O, L
