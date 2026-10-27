@@ -61,6 +61,8 @@ public:
             BlockMmadQK_::L1TileShape::K * BlockMmadQK_::L1TileShape::N * 2 * sizeof(ElementK);
         BlockMmadQK_ mmadQK(resource);
         BlockMmadPV_ mmadPV(resource, L1_QK_SIZE);
+        // [TRACE] 调完记得删
+        if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] enter\n"); }
 
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
         uint32_t headNum = t->head_num;
@@ -109,11 +111,15 @@ public:
                     qGm[taskInfo.qOffset], kGm[kvOffset], sGm, layoutQ, layoutK, layoutS, actualShapeQK, pingpongFlagQK,
                     nIdx == 0);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
+                // [TRACE] 调完记得删
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] qk set\n"); }
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPV(
                     pGm, vGm[kvOffset], oTmpGm, layoutP, layoutV, layoutOTmp, actualShapePV, pingpongFlagPV, smReady);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
+                // [TRACE] 调完记得删
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] pv set\n"); }
             }
         }
     }
@@ -127,6 +133,8 @@ public:
         AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID2);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID3);
+        // [TRACE] 调完记得删
+        if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] enter\n"); }
 
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
         float scaleValue = t->scale;
@@ -173,12 +181,22 @@ public:
                         pGm, sGm, maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape, (j == 0) ? 1u : 0u,
                         taskInfo.qRowNum, 1u, 0u, qkReady);
                 } else {
-                    Arch::CrossCoreWaitFlag(qkReady);
+    #if !defined(FAT_NO_SYNC)
+                Arch::CrossCoreWaitFlag(qkReady);
+#endif
+                // [TRACE] 调完记得删
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] got qk\n"); }
                     onlineSoftmax(
                         pGm, sGm, layoutP, layoutS, onlineSoftmaxShape, (j == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
                 }
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
+                // [TRACE] 调完记得删
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] sm set\n"); }
+#if !defined(FAT_NO_SYNC)
                 Arch::CrossCoreWaitFlag(pvReady);
+#endif
+                // [TRACE] 调完记得删
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] got pv\n"); }
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm, layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u, (j == 0) ? 1u : 0u,
