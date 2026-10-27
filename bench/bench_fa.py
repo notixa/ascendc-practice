@@ -69,6 +69,71 @@ def make_catlass(so_path):
     return run
 
 
+def make_vendor():
+    """torch_npu 的厂商融合 FA —— 产品级参照。
+
+    这是判断「30 TFLOPS 算好还是算差」的唯一参照：
+      - 若厂商也在 ~30 TFLOPS  → 30 就是平台现实，我们的 kernel 已达产品级
+      - 若厂商 100+ TFLOPS     → triton-ascend 有 3x 编译器损失，转 CATLASS 方向正确
+
+    ⚠ 接口在不同 torch_npu 版本上有差异（layout 名 / atten_mask 形状 / sparse_mode 语义），
+    所以这里做了一个小阶梯：按顺序试，第一个不抛异常的就用它。数值对不对由闸门负责。
+    """
+    fn = getattr(torch_npu, "npu_fusion_attention", None)
+    if fn is None:
+        raise RuntimeError("torch_npu 里没有 npu_fusion_attention，无法做厂商对照")
+
+    _mask = {}
+    _picked = {}
+
+    def _get_mask(n, device):
+        key = (n, str(device))
+        if key not in _mask:
+            # atten_mask 语义：True = 被屏蔽（不参与计算）
+            # causal → 屏蔽上三角（future），对角线保留（自己看自己）
+            _mask[key] = torch.triu(torch.ones((n, n), dtype=torch.bool, device=device), diagonal=1)
+        return _mask[key]
+
+    def _call(q, k, v, causal, variant):
+        B, N, H, D = q.shape
+        kw = dict(head_num=H, input_layout="BSND", scale=1.0 / math.sqrt(D))
+        if variant["mask"]:
+            n = variant["mask_n"] if variant["mask_n"] else N
+            kw["atten_mask"] = _get_mask(n, q.device)
+        if variant["sparse"] is not None:
+            kw["sparse_mode"] = variant["sparse"]
+        out = fn(q, k, v, **kw)
+        return out[0] if isinstance(out, (tuple, list)) else out
+
+    VARIANTS = [
+        dict(mask=True,  mask_n=None, sparse=0),   # 显式 [N,N] mask
+        dict(mask=True,  mask_n=2048, sparse=0),   # 显式 [2048,2048] mask（常见要求）
+        dict(mask=True,  mask_n=2048, sparse=2),   # 2048 mask + causal 模式
+        dict(mask=False, mask_n=None, sparse=2),   # 只给 sparse_mode，不传 mask
+        dict(mask=False, mask_n=None, sparse=None),# 完全默认（仅 full 可能对）
+    ]
+
+    def run(q_bnhd, k_bnhd, v_bnhd, causal, block_dim=0):
+        key = bool(causal)
+        if key in _picked:
+            return _call(q_bnhd, k_bnhd, v_bnhd, causal, _picked[key])
+
+        last = None
+        for var in VARIANTS:
+            if not causal and var["sparse"] == 2:
+                continue                       # full 模式不要试 causal 变体
+            try:
+                out = _call(q_bnhd, k_bnhd, v_bnhd, causal, var)
+                torch.npu.synchronize()
+                _picked[key] = var
+                print(f"  [vendor] causal={causal} 采用变体: {var}")
+                return out
+            except Exception as e:             # noqa: BLE001
+                last = e
+        raise RuntimeError(f"npu_fusion_attention 所有变体都失败，最后一个错误: {last}")
+    return run
+
+
 def make_triton():
     sys.path.insert(0, os.path.join(ROOT, "triton_lab"))
     from kernels.flash_attention.fa_fwd import fla_fwd   # noqa: E402
@@ -132,7 +197,7 @@ def flops_of(batch, heads, n, d, causal):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--only", choices=["catlass", "triton"], default=None)
+    ap.add_argument("--only", choices=["catlass", "triton", "vendor"], default=None)
     ap.add_argument("--graph", action="store_true",
                     help="对 triton 后端启用图捕获（消除 Python launcher 开销；"
                          "只在 device < 0.42ms 时有收益，N<=1024）")
@@ -151,6 +216,11 @@ def main():
         backends["catlass"] = make_catlass(args.so)
     if args.only in (None, "triton"):
         backends["triton"] = make_triton()
+    if args.only in (None, "vendor"):
+        try:
+            backends["vendor"] = make_vendor()
+        except Exception as e:                       # noqa: BLE001
+            print(f"跳过 vendor 后端: {e}")
 
     modes = [False, True] if args.mode == "both" else [args.mode == "causal"]
 
@@ -233,15 +303,18 @@ def main():
         for name, causal, batch, heads, n, med, tflops in rows:
             by_case.setdefault((causal, batch, heads, n), {})[name] = med
         print("=" * 74)
-        print(f"{'mode':<8}{'case':<20}{'catlass(ms)':>15}{'triton(ms)':>13}{'catlass/triton':>16}")
+        print(f"{'mode':<8}{'case':<20}{'catlass':>11}{'triton':>11}{'vendor':>11}"
+              f"{'triton/vendor':>15}")
         for (causal, batch, heads, n), d_ in sorted(by_case.items(), key=lambda x: (x[0][0], x[0][3])):
             c = d_.get("catlass", float("nan"))
             t = d_.get("triton", float("nan"))
-            ratio = c / t if t == t and t > 0 else float("nan")
+            vd = d_.get("vendor", float("nan"))
+            ratio = t / vd if vd == vd and vd > 0 else float("nan")
             mode = "causal" if causal else "full"
-            print(f"{mode:<8}{f'B{batch} H{heads} N{n}':<20}{c:>15.3f}{t:>13.3f}{ratio:>16.2f}x")
+            print(f"{mode:<8}{f'B{batch} H{heads} N{n}':<20}{c:>11.3f}{t:>11.3f}{vd:>11.3f}"
+                  f"{ratio:>15.2f}x")
         print("=" * 74)
-        print("ratio > 1 表示 CATLASS 更慢，< 1 表示更快")
+        print("triton/vendor > 1 表示我们的 Triton kernel 比厂商慢，< 1 表示更快")
         if args.graph:
             print("⚠ 本次启用了图捕获：数字里已没有 Triton 的 Python launcher 开销，")
             print("  不可与未开图的结果、或与 CATLASS（C++ 直调）横向比较。")
