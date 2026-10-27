@@ -107,6 +107,33 @@ o = torch.ops.catlass.fat(q, k, v, mask, scale, batch, block_dim)
 
 ---
 
+## 上机踩过的坑（910B / CANN 9.0.0 / aarch64）
+
+按**撞到的顺序**记，每条都标注了现象 —— 下次换机器重编时可以直接对照。
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `cmake ..` 报 `does not appear to contain CMakeLists.txt` | 在 `catlass_op/` 里跑，`..` 指到了上一层 | 必须在 `catlass_op/build/` 里跑 |
+| 2 | `CATLASS_INCLUDE_DIR 无效: /include` | `$CATLASS_DIR` 在新 shell 里丢了 → 展开成 `/include` | 写字面绝对路径；CMake 已加 fail-fast |
+| 3 | `aclnn` 头 / `devlib` 找不到 | CMake 里硬编码了 `x86_64-linux`，服务器是 `aarch64-linux` | 改用 `ASCEND_CANN_PACKAGE_LINUX_PATH`（`find_package(ASC)` 给出） |
+| 4 | ASC 编不到 `catlass/arch/arch.hpp` | `-DCATLASS_INCLUDE_DIR` 没传进去 | 同上，fail-fast 会在 cmake 阶段拦住 |
+| 5 | `GM_ADDR does not name a type`（一堆） | `fat_tiling.h` 同时被 gcc（host）和 bisheng（device）编译，而 `GM_ADDR` = `__gm__ uint8_t*`，gcc 不认识 | 拆成 `fat_tiling.h`（纯 POD，host 可用）+ `fat_params.h`（`GM_ADDR`，仅 `.asc`） |
+| 6 | `at_npu::native::OpCommand` / `c10::npu` 未声明 | 漏了 torch_npu 的三个头 | 补 `NPUFormat.h` / `CalcuOpUtil.h` / `OpAdapter.h` |
+| 7 | **上机后 kernel 卡死**（`torch.ops.catlass.fat` 不返回） | **A2 的 AIC/AIV 是两个物理核，跨核 flag 依赖硬件同步基地址**，不设就落在错误同步区 | 入口首参 `uint64_t hwSyncAddr` + 第一行 `AscendC::SetSyncBaseAddr(hwSyncAddr)`；host 侧取地址 |
+| 8 | `aclrtGetHardwareSyncAddr` 未声明 | `acl/acl.h` 有两份（CANN 完整版 / torch_npu 自带精简版），顺序不对就命中精简版 | 最终改用 **`dlsym(RTLD_DEFAULT, "aclrtGetHardwareSyncAddr")`**，绕开编译期头文件可见性；CMake 加 `-ldl` |
+
+### 第 7 条值得单独强调
+
+官方 torch-intf 模板明确说"**不需要 hw sync addr**"，但那是针对**纯 AIC** 的 matmul。
+**FA 是 AIC + AIV 协同**，`CrossCoreSetFlag` / `CrossCoreWaitFlag` 必须基于硬件同步基地址，
+否则 worker 侧永远等不到 producer 的 flag —— 表现是**静默死锁**（没有报错，就是不动）。
+
+### 第 8 条的取舍
+
+`dlsym` 方案的好处是**与 CANN 版本解耦**（CANN 9.0 的 acl 头里是否声明它都无所谓）；
+代价是编译期没有类型检查，所以加了 `TORCH_CHECK(fn != nullptr, ...)` 在拿不到符号时**明确报错**，
+而不是传 0 进 kernel 变成第 7 条那种静默死锁。
+
 ## 与官方模板的 4 处偏离
 
 | # | 模板假设 | 这里 |
