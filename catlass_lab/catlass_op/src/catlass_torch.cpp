@@ -70,6 +70,11 @@ uint64_t GetHardwareSyncAddrOrThrow()
 
 } // namespace
 
+#if defined(FAT_NO_OPCOMMAND)
+// 调试模式：直接调用，不经 torch_npu 的 OpCommand
+// —— 如果这样就不卡了，说明卡住的原因是 OpCommand 等错了流（我们传的是 nullptr）
+#define RUN_NPU_FUNC(func, ...) do { func(__VA_ARGS__); } while (false)
+#else
 #define RUN_NPU_FUNC(func, ...)                                                                                    \
     do {                                                                                                           \
         if ((func) == nullptr) {                                                                                   \
@@ -82,6 +87,7 @@ uint64_t GetHardwareSyncAddrOrThrow()
             return 0;                                                                                              \
         });                                                                                                        \
     } while (false)
+#endif
 
 namespace catlass_torch {
 

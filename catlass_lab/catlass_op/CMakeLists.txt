@@ -20,6 +20,14 @@ set(NPU_ARCH "2201" CACHE STRING "NPU architecture")
 
 # 设备侧打印：AscendC::PRINTF 需要 --cce-enable-print，【否则会被编译成空操作】
 option(FAT_ENABLE_PRINT "Enable device-side AscendC::PRINTF" OFF)
+
+# 调试用：绕过 torch_npu 的 OpCommand，直接调 kernel wrapper。
+# 用来区分「kernel 内部死锁」和「OpCommand 等错了流」。
+option(FAT_NO_OPCOMMAND "Bypass torch_npu OpCommand (debug stream deadlock)" OFF)
+if(FAT_NO_OPCOMMAND)
+  message(STATUS "OpCommand bypass: ON")
+  add_compile_definitions(FAT_NO_OPCOMMAND=1)
+endif()
 if(FAT_ENABLE_PRINT)
   message(STATUS "device print: ON (--cce-enable-print)")
   add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--cce-enable-print>)
