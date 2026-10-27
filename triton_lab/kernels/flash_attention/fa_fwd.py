@@ -117,7 +117,7 @@ def fla_fwd_kernel(
             q = (
                 tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 * scale
-            )
+            ).to(q_ptr.dtype.element_ty)
         for j in range(T_k):
             if EVEN_K:
                 k = tl.load(k_block_ptr)
