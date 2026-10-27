@@ -133,6 +133,11 @@ def flops_of(batch, heads, n, d, causal):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", choices=["catlass", "triton"], default=None)
+    ap.add_argument("--graph", action="store_true",
+                    help="对 triton 后端启用图捕获（消除 Python launcher 开销；"
+                         "只在 device < 0.42ms 时有收益，N<=1024）")
+    ap.add_argument("--graph-copy", action="store_true",
+                    help="图捕获时把输入 copy_ 也计入（默认不计：纯 replay = device-only 时间）")
     ap.add_argument("--mode", choices=["full", "causal", "both"], default="both")
     ap.add_argument("--skip-correctness", action="store_true")
     ap.add_argument("--peak-tflops", type=float, default=None,
@@ -170,10 +175,25 @@ def main():
             ref = None if args.skip_correctness else golden(q.cpu(), k.cpu(), v.cpu(), causal)
 
             for name, fn in backends.items():
+                tag_g = ""
+                gf = None
+                if args.graph and name == "triton":
+                    sys.path.insert(0, HERE)
+                    from graph_fa import GraphedFLA      # noqa: PLC0415
+                    gf = GraphedFLA(batch, n, heads, d, causal=causal)
+                    if args.graph_copy:
+                        call = lambda: gf(q, k, v)       # 图 + 输入拷贝（真实口径）
+                        tag_g = " [图+拷贝]"
+                    else:
+                        call = gf.replay_only            # 纯 replay（device-only）
+                        tag_g = " [图 replay-only]"
+                else:
+                    call = lambda: fn(q, k, v, causal)
+
                 # ---- 闸门 ----
                 if ref is not None:
                     try:
-                        o = fn(q, k, v, causal)
+                        o = (gf(q, k, v) if gf is not None else fn(q, k, v, causal))
                         torch.npu.synchronize()
                     except Exception as e:                  # noqa: BLE001
                         print(f"  [{tag}] {name:<8} 跑不通: {e}")
@@ -187,7 +207,7 @@ def main():
 
                 # ---- 计时 ----
                 try:
-                    med, lo, hi, spread = timeit(lambda: fn(q, k, v, causal))
+                    med, lo, hi, spread = timeit(call)
                 except Exception as e:                      # noqa: BLE001
                     print(f"  [{tag}] {name:<8} 计时失败: {e}")
                     continue
@@ -195,9 +215,16 @@ def main():
                 tflops = f / (med * 1e-3) / 1e12
                 peak = f"  {100.0 * tflops / args.peak_tflops:5.1f}% peak" if args.peak_tflops else ""
                 warn = "  ⚠ 波动大" if spread > 0.10 else ""
-                print(f"  [{tag}]     {name:<8} {med:8.3f} ms  [{lo:.3f}, {hi:.3f}]  "
+                print(f"  [{tag}]     {name:<8}{tag_g} {med:8.3f} ms  [{lo:.3f}, {hi:.3f}]  "
                       f"{tflops:7.1f} TFLOPS{peak}{warn}")
                 rows.append((name, causal, batch, heads, n, med, tflops))
+
+                # 顺便把 device-only 时间也打出来，方便和上面的数对比
+                if gf is not None:
+                    med_r, lo_r, hi_r, _ = timeit(gf.replay_only)
+                    print(f"  [{tag}]       └─ device-only (纯 replay) {med_r:8.3f} ms  "
+                          f"[{lo_r:.3f}, {hi_r:.3f}]")
+                    del gf                                # 及时释放图内存池
         print()
 
     # ---- 汇总 ----
@@ -215,6 +242,9 @@ def main():
             print(f"{mode:<8}{f'B{batch} H{heads} N{n}':<20}{c:>15.3f}{t:>13.3f}{ratio:>16.2f}x")
         print("=" * 74)
         print("ratio > 1 表示 CATLASS 更慢，< 1 表示更快")
+        if args.graph:
+            print("⚠ 本次启用了图捕获：数字里已没有 Triton 的 Python launcher 开销，")
+            print("  不可与未开图的结果、或与 CATLASS（C++ 直调）横向比较。")
         print("注意：causal 行两边 FLOPs 相同，但绝对 FLOPs 只有 full 的一半，不要跨行比较 TFLOPS")
 
 
