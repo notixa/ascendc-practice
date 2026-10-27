@@ -29,7 +29,8 @@
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 #include <torch_npu/csrc/framework/utils/CalcuOpUtil.h>
 #include <torch_npu/csrc/framework/utils/OpAdapter.h>
-#include <acl/acl.h>   // aclrtGetHardwareSyncAddr
+#include <acl/acl.h>      // AclAPI 总入口
+#include <acl/acl_rt.h>   // aclrtGetHardwareSyncAddr（显式再引一次，防止被精简版 acl.h 遮蔽）
 #include <tiling/platform/platform_ascendc.h>
 
 #include <algorithm>

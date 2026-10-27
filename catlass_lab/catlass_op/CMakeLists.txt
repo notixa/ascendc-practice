@@ -65,16 +65,28 @@ if(NOT DEFINED ASCEND_CANN_PACKAGE_LINUX_PATH OR ASCEND_CANN_PACKAGE_LINUX_PATH 
 endif()
 message(STATUS "CANN arch dir: ${ASCEND_CANN_PACKAGE_LINUX_PATH}")
 
+# ⚠️ 顺序有讲究：CANN 的 include 必须排在 torch_npu 之前。
+#    原因：torch_npu 的 include 目录里也带了一份 acl/acl.h（精简版），
+#    排在前面会抢先匹配，导致 aclrtGetHardwareSyncAddr 等接口"未声明"。
 include_directories(
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${CATLASS_INCLUDE_DIR}
-  ${FA_KERNEL_DIR}
+  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/include
+  ${ASCEND_HOME_PATH}/include
+  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/include/aclnn
+  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/include
   ${Python3_INCLUDE_DIRS}
   ${TORCH_INCLUDE_DIRS}
   ${Python3_SITELIB}/torch_npu/include
-  ${ASCEND_HOME_PATH}/include
-  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/include/aclnn
-  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CATLASS_INCLUDE_DIR}
+  ${FA_KERNEL_DIR})
+
+# 就诊：确认编译时到底会用到哪一份 acl/acl.h
+foreach(_d ${ASCEND_CANN_PACKAGE_LINUX_PATH}/include ${ASCEND_HOME_PATH}/include
+           ${Python3_SITELIB}/torch_npu/include)
+  if(EXISTS "${_d}/acl/acl.h")
+    message(STATUS "acl/acl.h 可见于: ${_d}/acl/acl.h")
+  endif()
+endforeach()
 
 link_directories(
   ${ASCEND_HOME_PATH}/lib64
