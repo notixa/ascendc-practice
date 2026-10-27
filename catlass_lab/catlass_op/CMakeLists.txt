@@ -54,6 +54,17 @@ if(NOT EXISTS "${FA_KERNEL_DIR}/fat_types.h")
   message(FATAL_ERROR "FA_KERNEL_DIR 无效（找不到 fat_types.h）: ${FA_KERNEL_DIR}")
 endif()
 
+# ---- CANN 的按架构分目录：x86_64-linux / aarch64-linux ----
+# find_package(ASC) 会给出 ASCEND_CANN_PACKAGE_LINUX_PATH；没给就自己按目录存在性判断。
+if(NOT DEFINED ASCEND_CANN_PACKAGE_LINUX_PATH OR ASCEND_CANN_PACKAGE_LINUX_PATH STREQUAL "")
+  if(EXISTS "${ASCEND_HOME_PATH}/aarch64-linux")
+    set(ASCEND_CANN_PACKAGE_LINUX_PATH "${ASCEND_HOME_PATH}/aarch64-linux")
+  else()
+    set(ASCEND_CANN_PACKAGE_LINUX_PATH "${ASCEND_HOME_PATH}/x86_64-linux")
+  endif()
+endif()
+message(STATUS "CANN arch dir: ${ASCEND_CANN_PACKAGE_LINUX_PATH}")
+
 include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CATLASS_INCLUDE_DIR}
@@ -62,12 +73,13 @@ include_directories(
   ${TORCH_INCLUDE_DIRS}
   ${Python3_SITELIB}/torch_npu/include
   ${ASCEND_HOME_PATH}/include
-  ${ASCEND_HOME_PATH}/x86_64-linux/include/aclnn
-  ${ASCEND_HOME_PATH}/x86_64-linux/asc/include)
+  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/include/aclnn
+  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/include)
 
 link_directories(
   ${ASCEND_HOME_PATH}/lib64
-  ${ASCEND_HOME_PATH}/x86_64-linux/devlib
+  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/lib64
+  ${ASCEND_CANN_PACKAGE_LINUX_PATH}/devlib
   ${Python3_SITELIB}/torch_npu/lib)
 
 # ---------------------------------------------------------------------------
