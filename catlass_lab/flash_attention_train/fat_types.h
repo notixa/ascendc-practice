@@ -9,7 +9,7 @@
  *
  * 消费方：
  *   - catlass_op/kernel/catlass_kernel.asc   （生产 kernel，bisheng 编）
- *   - flash_attention_train/standalone/*.cpp （可选：不依赖 torch 的验证程序）
+ *   - flash_attention_train/standalone/xxx.cpp （可选：不依赖 torch 的验证程序）
  *   - 未来的 bwd kernel
  *
  * ⚠ 边界：

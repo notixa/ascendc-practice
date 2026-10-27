@@ -12,7 +12,7 @@
 #include "catlass/gemm_coord.hpp"
 #include "catlass/layout/layout.hpp"
 
-#include "fat_tiling.h"
+#include "fat_params.h"   // FATParams（含 GM_ADDR）+ FATTiling
 #include "kernel_operator.h"
 using namespace Catlass;
 

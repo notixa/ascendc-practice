@@ -39,10 +39,20 @@ find_package(Torch REQUIRED)
 set(CATLASS_INCLUDE_DIR
     "/home/notixa/codes/opensource-project/catlass/include"
     CACHE PATH "CATLASS include dir")
-# 你的 kernel（fat_kernel.h / fat_tiling.h 所在目录）
+# 你的 kernel（fat_kernel.h / fat_types.h / fat_tiling.h 所在目录）
 set(FA_KERNEL_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../flash_attention_train"
     CACHE PATH "FATkernel dir")
+
+# ---- fail-fast：路径不对就在这里报，而不是等 make 时报一堆 "file not found" ----
+if(NOT EXISTS "${CATLASS_INCLUDE_DIR}/catlass/arch/arch.hpp")
+  message(FATAL_ERROR
+    "CATLASS_INCLUDE_DIR 无效（找不到 catlass/arch/arch.hpp）: ${CATLASS_INCLUDE_DIR}\n"
+    "  请在 cmake 时显式指定： -DCATLASS_INCLUDE_DIR=<catlass 仓库>/include")
+endif()
+if(NOT EXISTS "${FA_KERNEL_DIR}/fat_types.h")
+  message(FATAL_ERROR "FA_KERNEL_DIR 无效（找不到 fat_types.h）: ${FA_KERNEL_DIR}")
+endif()
 
 include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -68,6 +78,13 @@ set_source_files_properties(kernel/catlass_kernel.asc PROPERTIES LANGUAGE ASC)
 add_library(catlass_fat SHARED
   src/catlass_torch.cpp
   kernel/catlass_kernel.asc)
+
+# 再显式挂一遍（target_include_directories 对所有语言都生效，包括 ASC，
+# 避免某些 toolchain 下 include_directories 没传给 .asc 的编译命令）
+target_include_directories(catlass_fat PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CATLASS_INCLUDE_DIR}
+  ${FA_KERNEL_DIR})
 
 target_link_libraries(catlass_fat
   ${TORCH_LIBRARIES}

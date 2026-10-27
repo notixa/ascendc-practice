@@ -22,14 +22,20 @@
  */
 
 #include <torch/extension.h>
+// 官方 torch-intf 模板用的这一组（顺序照抄）：
+//   OpAdapter.h 提供 at_npu::native::OpCommand（RUN_NPU_FUNC 依赖）
+//   NPUFormat.h / CalcuOpUtil.h 提供 torch_npu 的 layout/dtype 适配
 #include <torch_npu/csrc/core/npu/NPUStream.h>
+#include <torch_npu/csrc/core/npu/NPUFormat.h>
+#include <torch_npu/csrc/framework/utils/CalcuOpUtil.h>
+#include <torch_npu/csrc/framework/utils/OpAdapter.h>
 #include <tiling/platform/platform_ascendc.h>
 
 #include <algorithm>
 #include <cstring>
 
 #include "catlass_kernel.h"
-#include "fat_tiling.h"
+#include "fat_tiling.h"   // 只含 FATTiling（纯 POD）；FATParams 是设备侧的，不要在这里引
 
 #define RUN_NPU_FUNC(func, ...)                                                                                    \
     do {                                                                                                           \
@@ -151,7 +157,11 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     auto o3 = at::empty_like(q3);
 
     // ---------------- 5. launch ----------------
-    void* stream = c10::npu::getCurrentNPUStream().stream();
+    // 用默认流：bench 场景不涉及自定义 stream，传 nullptr 最稳（不依赖 c10::npu:: 的版本差异）。
+    // 如果以后要在自定义流/多流上用，改成 c10::npu::getCurrentNPUStream().stream()，
+    // 并在服务器上用 grep 确认它的命名空间：
+    //   grep -rn "getCurrentNPUStream" $TA/include/ | head
+    void* stream = nullptr;
 
     // TODO(hw sync)：如果上机发现跨核 flag 不生效（AIV 一直等 qkReady / 结果全 0），
     // 需要在这里取 aclrtGetHardwareSyncAddr，并在 .asc 的 __global__ 入口调 SetSyncBaseAddr。
