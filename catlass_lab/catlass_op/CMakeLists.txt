@@ -17,6 +17,13 @@ set(CMAKE_CXX_STANDARD 17)
 # 架构：910B = 2201
 # ---------------------------------------------------------------------------
 set(NPU_ARCH "2201" CACHE STRING "NPU architecture")
+
+# 设备侧打印：AscendC::PRINTF 需要 --cce-enable-print，【否则会被编译成空操作】
+option(FAT_ENABLE_PRINT "Enable device-side AscendC::PRINTF" OFF)
+if(FAT_ENABLE_PRINT)
+  message(STATUS "device print: ON (--cce-enable-print)")
+  add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--cce-enable-print>)
+endif()
 add_compile_definitions(CATLASS_ARCH=${NPU_ARCH})
 add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-${NPU_ARCH}>)
 add_compile_options(
