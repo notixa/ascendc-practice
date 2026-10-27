@@ -102,7 +102,7 @@ def golden(q, k, v, causal):
     s = torch.einsum("bqhd,bkhd->bhqk", q.float(), k.float()) / math.sqrt(q.size(-1))
     if causal:
         n = q.size(1)
-        m = torch.triu(torch.ones(n, n, dtype=torch.bool), device=s.device)
+        m = torch.triu(torch.ones((n, n), dtype=torch.bool, device=s.device))
         s = s.masked_fill(m, float("-inf"))
     return torch.einsum("bhqk,bkhd->bqhd", torch.softmax(s, -1), v.float())
 
