@@ -30,6 +30,14 @@ option(FAT_NO_OPCOMMAND "Bypass torch_npu OpCommand (debug stream deadlock)" OFF
 #   - 开了它，kernel 能跑完且 O 非 0  → AIV 跑过 ⇒ 之前是跨核 flag 收不到
 #   - 开了它，仍然卡死 / O 全 0      → AIV 根本没被调度
 option(FAT_NO_SYNC "Drop AIV cross-core waits (debug: is AIV scheduled?)" OFF)
+
+# 调试用：AIC 只做 QK，跳过 PV（配合 FAT_ENABLE_PRINT 用）
+# 目的：确认「QK + AIV softmax」这条链路是否完全正常，把问题隔离在 PV
+option(FAT_QK_ONLY "AIC does QK only, skip PV (debug)" OFF)
+if(FAT_QK_ONLY)
+  message(STATUS "QK only (PV skipped)")
+  add_compile_definitions(FAT_QK_ONLY=1)
+endif()
 if(FAT_NO_SYNC)
   message(STATUS "AIV cross-core wait disabled")
   add_compile_definitions(FAT_NO_SYNC=1)

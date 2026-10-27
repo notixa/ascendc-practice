@@ -115,8 +115,14 @@ public:
                 if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] qk set\n"); }
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
+#if !defined(FAT_QK_ONLY)
+                // [TRACE] 调完记得删
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] before PV\n"); }
                 mmadPV(
                     pGm, vGm[kvOffset], oTmpGm, layoutP, layoutV, layoutOTmp, actualShapePV, pingpongFlagPV, smReady);
+                // [TRACE] 调完记得删
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] after PV\n"); }
+#endif
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
                 // [TRACE] 调完记得删
                 if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] pv set\n"); }
