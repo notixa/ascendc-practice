@@ -74,18 +74,17 @@ def make_triton():
     from kernels.flash_attention.fa_fwd import fla_fwd   # noqa: E402
 
     def run(q_bnhd, k_bnhd, v_bnhd, causal, block_dim=0):
-        # Triton 需要 [B, H, N, D]
-        q = q_bnhd.permute(0, 2, 1, 3).contiguous()
-        k = k_bnhd.permute(0, 2, 1, 3).contiguous()
-        v = v_bnhd.permute(0, 2, 1, 3).contiguous()
+        # ⚠ triton_lab 的 fla_fwd 用的是 token-major [B, N, H, D]
+        #   （N_q = Q.size(1)、head = Q.size(2)），和 CATLASS 那边一致。
+        #   不要 permute 成 [B,H,N,D] —— 那样 N_q/head 会互换，结果全错。
         try:
-            o_bhnd, _lse = fla_fwd(q, k, v, causal=causal)
+            o, _lse = fla_fwd(q_bnhd, k_bnhd, v_bnhd, causal=causal)
         except TypeError:
             if causal:
                 raise RuntimeError(
                     "fla_fwd 还不支持 causal 参数 —— 先在 triton_lab 里实现（见 bench/README.md）")
-            o_bhnd, _lse = fla_fwd(q, k, v)
-        return o_bhnd.permute(0, 2, 1, 3).contiguous()
+            o, _lse = fla_fwd(q_bnhd, k_bnhd, v_bnhd)
+        return o
     return run
 
 
