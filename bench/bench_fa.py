@@ -97,20 +97,23 @@ def make_vendor():
     def _call(q, k, v, causal, variant):
         B, N, H, D = q.shape
         kw = dict(head_num=H, input_layout="BSND", scale=1.0 / math.sqrt(D))
-        if variant["mask"]:
-            n = variant["mask_n"] if variant["mask_n"] else N
-            kw["atten_mask"] = _get_mask(n, q.device)
-        if variant["sparse"] is not None:
-            kw["sparse_mode"] = variant["sparse"]
+        if causal:                                  # ★ full 模式【不能】传 mask
+            if variant["mask"]:
+                n = variant["mask_n"] if variant["mask_n"] else N
+                kw["atten_mask"] = _get_mask(n, q.device)
+            if variant["sparse"] is not None:
+                kw["sparse_mode"] = variant["sparse"]
         out = fn(q, k, v, **kw)
         return out[0] if isinstance(out, (tuple, list)) else out
 
-    VARIANTS = [
-        dict(mask=True,  mask_n=None, sparse=0),   # 显式 [N,N] mask
-        dict(mask=True,  mask_n=2048, sparse=0),   # 显式 [2048,2048] mask（常见要求）
-        dict(mask=True,  mask_n=2048, sparse=2),   # 2048 mask + causal 模式
-        dict(mask=False, mask_n=None, sparse=2),   # 只给 sparse_mode，不传 mask
-        dict(mask=False, mask_n=None, sparse=None),# 完全默认（仅 full 可能对）
+    CAUSAL_VARIANTS = [
+        dict(mask=True,  mask_n=None, sparse=0),   # 显式 [N,N] mask（实测你的版本可用）
+        dict(mask=True,  mask_n=2048, sparse=0),   # 显式 [2048,2048] mask
+        dict(mask=False, mask_n=None, sparse=2),   # 只给 sparse_mode
+    ]
+    FULL_VARIANTS = [
+        dict(mask=False, mask_n=None, sparse=None),# 不传任何 mask（= 全通）
+        dict(mask=False, mask_n=None, sparse=0),   # 显式声明 default 模式
     ]
 
     def run(q_bnhd, k_bnhd, v_bnhd, causal, block_dim=0):
@@ -119,9 +122,7 @@ def make_vendor():
             return _call(q_bnhd, k_bnhd, v_bnhd, causal, _picked[key])
 
         last = None
-        for var in VARIANTS:
-            if not causal and var["sparse"] == 2:
-                continue                       # full 模式不要试 causal 变体
+        for var in (CAUSAL_VARIANTS if causal else FULL_VARIANTS):
             try:
                 out = _call(q_bnhd, k_bnhd, v_bnhd, causal, var)
                 torch.npu.synchronize()
