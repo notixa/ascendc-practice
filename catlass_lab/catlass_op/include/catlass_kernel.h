@@ -14,6 +14,7 @@ namespace catlass_kernel {
 
 // 启动一次 FAT（FlashAttention Training/prefill）forward。
 //
+//   hwSyncAddr : aclrtGetHardwareSyncAddr 拿到的硬件同步基地址（AIC<->AIV 跨核 flag 必需）
 //   coreNum : 使用多少个 AIC 核（= blockDim）
 //   stream  : 当前 NPU stream（void* 而不是 aclrtStream，避免 ASC 类型解析问题）
 //   其余    : device 指针，语义见 fat_tiling.h 的 FATParams
@@ -22,7 +23,7 @@ namespace catlass_kernel {
 //   s      : coreNum * B_q * B_k     float
 //   p      : coreNum * B_q * B_k     half
 //   oTemp  : coreNum * B_q * headDim  float
-void fat(uint32_t coreNum, void* stream,
+void fat(uint64_t hwSyncAddr, uint32_t coreNum, void* stream,
          uint8_t* q, uint8_t* k, uint8_t* v, uint8_t* mask, uint8_t* o,
          uint8_t* s, uint8_t* p, uint8_t* oTemp, uint8_t* tiling);
 

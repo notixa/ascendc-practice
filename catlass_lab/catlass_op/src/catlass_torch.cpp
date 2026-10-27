@@ -29,6 +29,7 @@
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 #include <torch_npu/csrc/framework/utils/CalcuOpUtil.h>
 #include <torch_npu/csrc/framework/utils/OpAdapter.h>
+#include <acl/acl.h>   // aclrtGetHardwareSyncAddr
 #include <tiling/platform/platform_ascendc.h>
 
 #include <algorithm>
@@ -163,10 +164,12 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     //   grep -rn "getCurrentNPUStream" $TA/include/ | head
     void* stream = nullptr;
 
-    // TODO(hw sync)：如果上机发现跨核 flag 不生效（AIV 一直等 qkReady / 结果全 0），
-    // 需要在这里取 aclrtGetHardwareSyncAddr，并在 .asc 的 __global__ 入口调 SetSyncBaseAddr。
-    // 官方 torch-intf 模板说纯 AIC 的 matmul 不需要；FA 是 AIC+AIV，属于待验证项。
-    RUN_NPU_FUNC(catlass_kernel::fat, static_cast<uint32_t>(blockDim), stream,
+    // ★ AIC<->AIV 跨核 flag 的硬件同步基地址（fai.cpp 同样要做）
+    uint64_t hwSyncAddr = 0;
+    TORCH_CHECK(aclrtGetHardwareSyncAddr(reinterpret_cast<void**>(&hwSyncAddr)) == ACL_SUCCESS,
+                "aclrtGetHardwareSyncAddr failed");
+
+    RUN_NPU_FUNC(catlass_kernel::fat, hwSyncAddr, static_cast<uint32_t>(blockDim), stream,
                  reinterpret_cast<uint8_t*>(q3.data_ptr()),
                  reinterpret_cast<uint8_t*>(k3.data_ptr()),
                  reinterpret_cast<uint8_t*>(v3.data_ptr()),
