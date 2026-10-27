@@ -117,7 +117,8 @@ def fla_fwd_kernel(
             q = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
         q = (q * scale).to(q_ptr.dtype.element_ty)
-        for j in range(T_k):
+        for j in range(T_k - 1 if IS_CAUSAL else T_k):
+            k_idx = j
             if EVEN_K:
                 k = tl.load(k_block_ptr)
                 v = tl.load(v_block_ptr)
@@ -126,12 +127,8 @@ def fla_fwd_kernel(
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 s = tl.dot(q, tl.trans(k))
-                k_offsets = j * BLOCK_K + tl.arange(0, BLOCK_K)
+                k_offsets = k_idx * BLOCK_K + tl.arange(0, BLOCK_K)
                 s = tl.where(k_offsets[None, :] < N_k, s, -float("inf"))
-            if IS_CAUSAL:
-                q_idx = i * BLOCK_Q + tl.arange(0, BLOCK_Q)
-                k_idx = j * BLOCK_K + tl.arange(0, BLOCK_K)
-                s = tl.where(k_idx[None, :] <= q_idx[:, None], s, -float("inf"))
             m_prev = m
             if MULTI_BLOCK:
                 m = tl.maximum(
@@ -146,6 +143,37 @@ def fla_fwd_kernel(
             o = tl.dot(s.to(v.dtype), v, o)
             k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
             v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
+
+        if IS_CAUSAL:
+            # 对角线路径
+            k_idx = T_k - 1
+            if EVEN_K:
+                k = tl.load(k_block_ptr)
+                v = tl.load(v_block_ptr)
+                s = tl.dot(q, tl.trans(k))
+            else:
+                k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                s = tl.dot(q, tl.trans(k))
+                k_offsets = k_idx * BLOCK_K + tl.arange(0, BLOCK_K)
+                s = tl.where(k_offsets[None, :] < N_k, s, -float("inf"))
+
+            q_idx = i * BLOCK_Q + tl.arange(0, BLOCK_Q)
+            k_idx = k_idx * BLOCK_K + tl.arange(0, BLOCK_K)
+            s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -float("inf"))
+            m_prev = m
+            if MULTI_BLOCK:
+                m = tl.maximum(
+                    m_prev, tl.max(s, axis=-1), propagate_nan=tl.PropagateNan.ALL
+                )
+            else:
+                m = tl.maximum(m_prev, tl.max(s, axis=-1))
+            s = tl.exp(s - m[:, None])
+            factor = tl.exp(m_prev - m)
+            l = factor * l + tl.sum(s, axis=-1)
+            o = factor[:, None] * o
+            o = tl.dot(s.to(v.dtype), v, o)
+
         o = o / l[:, None]
         l = m + tl.log(l)
         if EVEN_Q:
@@ -164,6 +192,7 @@ def base_tile(head_dim, n_q, n_k):
     bd = ((head_dim + 15) // 16) * 16  # ceil16，不是 next_pow2
     while bq * bd * 2 > 64 * 1024 and bq > 32:  # q tile 64KB 预算
         bq //= 2
+    bq = min(bq, bk)
     return bq, bk, bd
 
 
