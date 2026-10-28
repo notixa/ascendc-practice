@@ -92,13 +92,14 @@ uint64_t GetHardwareSyncAddrOrThrow()
 namespace catlass_torch {
 
 // 诊断用：最小 AIC<->AIV 往返握手，不带计算。
-void pingpong(const at::Tensor& out, int64_t blockDim)
+void pingpong(const at::Tensor& out, int64_t blockDim, int64_t stream_handle)
 {
     TORCH_CHECK(out.scalar_type() == at::kInt, "out 必须是 int32");
     TORCH_CHECK(out.numel() >= 4, "out 至少 4 个元素");
     uint64_t hwSyncAddr = GetHardwareSyncAddrOrThrow();
     uint32_t coreNum = static_cast<uint32_t>(blockDim > 0 ? blockDim : 1);
-    catlass_kernel::pingpong(hwSyncAddr, coreNum, nullptr,
+    void* stream = reinterpret_cast<void*>(static_cast<uintptr_t>(stream_handle));
+    catlass_kernel::pingpong(hwSyncAddr, coreNum, stream,
                              static_cast<uint8_t*>(out.data_ptr()));
 }
 
@@ -108,7 +109,8 @@ static constexpr int64_t B_Q = 128;
 static constexpr int64_t B_K = 128;
 
 at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
-               const at::Tensor& mask, double scale, int64_t batch, int64_t blockDim)
+               const at::Tensor& mask, double scale, int64_t batch, int64_t blockDim,
+               int64_t stream_handle)
 {
     // ---------------- 1. 基础校验 ----------------
     TORCH_CHECK(q.device().type() == c10::DeviceType::PrivateUse1, "q must be on NPU");
@@ -208,11 +210,10 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     auto o3 = at::empty_like(q3);
 
     // ---------------- 5. launch ----------------
-    // 用默认流：bench 场景不涉及自定义 stream，传 nullptr 最稳（不依赖 c10::npu:: 的版本差异）。
-    // 如果以后要在自定义流/多流上用，改成 c10::npu::getCurrentNPUStream().stream()，
-    // 并在服务器上用 grep 确认它的命名空间：
-    //   grep -rn "getCurrentNPUStream" $TA/include/ | head
-    void* stream = nullptr;
+    // stream 由 Python 侧传入（torch.npu.current_stream().npu_stream）。
+    // 传 0 时退回 nullptr（默认流）；传真实句柄可用于排查「跨核 flag 只在 torch 的
+    // 当前流上才配对」这类问题。
+    void* stream = reinterpret_cast<void*>(static_cast<uintptr_t>(stream_handle));
 
     // ★ AIC<->AIV 跨核 flag 的硬件同步基地址（fai.cpp 同样要做）
     const uint64_t hwSyncAddr = GetHardwareSyncAddrOrThrow();
@@ -236,8 +237,8 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
 
 TORCH_LIBRARY(catlass, m)
 {
-    m.def("fat(Tensor q, Tensor k, Tensor v, Tensor mask, float scale, int batch, int blockDim) -> Tensor");
-    m.def("pingpong(Tensor out, int blockDim) -> ()");
+    m.def("fat(Tensor q, Tensor k, Tensor v, Tensor mask, float scale, int batch, int blockDim, int stream=0) -> Tensor");
+    m.def("pingpong(Tensor out, int blockDim, int stream=0) -> ()");
 }
 
 TORCH_LIBRARY_IMPL(catlass, PrivateUse1, m)
