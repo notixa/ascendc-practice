@@ -65,6 +65,7 @@ public:
         if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] enter\n"); }
 
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
+        if (t->dbg_sm_id != 0) { smReady.id = static_cast<Catlass::Arch::FlagID>(t->dbg_sm_id); }
         uint32_t headNum = t->head_num;
         uint32_t headDim = t->head_dim;
         uint32_t B_q = t->B_q;
@@ -143,6 +144,7 @@ public:
         if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] enter\n"); }
 
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
+        if (t->dbg_sm_id != 0) { smReady.id = static_cast<Catlass::Arch::FlagID>(t->dbg_sm_id); }
         float scaleValue = t->scale;
         uint32_t N_q = t->N_q;
         uint32_t N_k = t->N_k;
@@ -203,9 +205,14 @@ public:
                         pGm, sGm, layoutP, layoutS, onlineSoftmaxShape, (j == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
                 }
 #if !defined(FAT_SM_EARLY)
-                Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
+                switch (t->dbg_sm_pipe) {
+                    case 0: Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady); break;
+                    case 1: Arch::CrossCoreSetFlag<0x2, PIPE_V>(smReady); break;
+                    case 2: Arch::CrossCoreSetFlag<0x2, PIPE_MTE2>(smReady); break;
+                    default: Arch::CrossCoreSetFlag<0x2, PIPE_S>(smReady); break;
+                }
                 // [TRACE] 调完记得删
-                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] sm set\n"); }
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] sm set (pipe=%d)\n", t->dbg_sm_pipe); }
 #endif
 #if !defined(FAT_NO_SYNC)
                 Arch::CrossCoreWaitFlag(pvReady);

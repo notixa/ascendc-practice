@@ -146,10 +146,13 @@ int main(int argc, char** argv)
     if (argc > 2) o.h = static_cast<uint32_t>(atoi(argv[2]));
     if (argc > 3) o.causal = atoi(argv[3]);
     if (argc > 4) o.blockDim = static_cast<uint32_t>(atoi(argv[4]));
+    uint32_t dbgSmId = (argc > 5) ? static_cast<uint32_t>(atoi(argv[5])) : 0;
+    uint32_t dbgSmPipe = (argc > 6) ? static_cast<uint32_t>(atoi(argv[6])) : 0;
     const uint32_t B_q = 128, B_k = 128;
     const uint32_t B = o.batch, N = o.n, H = o.h, D = o.d;
 
-    printf("=== fat_bench  N=%u H=%u D=%u B=%u causal=%d ===\n", N, H, D, B, o.causal);
+    printf("=== fat_bench  N=%u H=%u D=%u B=%u causal=%d  dbg_sm_id=%u dbg_sm_pipe=%u ===\n",
+           N, H, D, B, o.causal, dbgSmId, dbgSmPipe);
 
     // ---------------- ACL 初始化（严格照 examples/23 的顺序） ----------------
     ACL_OK(aclInit(nullptr));
@@ -215,6 +218,8 @@ int main(int argc, char** argv)
     tiling.batch_num = B;
     tiling.numTask = numTask;
     tiling.scale = static_cast<float>(1.0 / std::sqrt(static_cast<double>(D)));
+    tiling.dbg_sm_id = dbgSmId;
+    tiling.dbg_sm_pipe = dbgSmPipe;
     ACL_OK(aclrtMemcpy(tilingDev, sizeof(FATTiling), &tiling, sizeof(FATTiling), ACL_MEMCPY_HOST_TO_DEVICE));
 
     // ---------------- workspace（公式必须和 catlass_kernel.asc 里的一致） ----------------
