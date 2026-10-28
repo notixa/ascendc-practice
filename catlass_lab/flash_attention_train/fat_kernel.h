@@ -13,7 +13,7 @@
 #include "catlass/layout/layout.hpp"
 
 #include "fat_tiling.h"
-#include "fat_params.h"   // FATParams（设备侧：含 GM_ADDR），host 侧不要引
+#include "fat_params.h" // FATParams（设备侧：含 GM_ADDR），host 侧不要引
 #include "kernel_operator.h"
 #include "kernel_operator_common_intf_impl.h"
 using namespace Catlass;
@@ -120,7 +120,7 @@ public:
         LayoutK layoutK{headNum * headDim, B_k * STACK_NUM};
         LayoutS layoutS{B_q, B_k * STACK_NUM};
         LayoutP layoutP{B_q, B_k * STACK_NUM};
-        LayoutV layoutV{B_k * STACK_NUM, headDim * headNum};
+        LayoutV layoutV{B_k * STACK_NUM, headDim, headDim * headNum};
         LayoutOTmp layoutOTmp{B_q, headDim};
 
         uint32_t spOffset = GetBlockIdx() * B_q * B_k * STACK_NUM;
@@ -129,7 +129,8 @@ public:
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += AscendC::GetBlockNum()) {
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk);
 
-            mmadQK.loadQGM(qGm[taskInfo.qOffset], layoutQ, taskInfo.qRowNum, B_q, headNum);
+            uint32_t singleGroupHeads = 1;
+            mmadQK.loadQGM(qGm[taskInfo.qOffset], layoutQ, taskInfo.qRowNum, singleGroupHeads, headNum);
             for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM) {
                 uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.visibleEnd - nIdx * B_k) ?
                                        B_k * STACK_NUM :
