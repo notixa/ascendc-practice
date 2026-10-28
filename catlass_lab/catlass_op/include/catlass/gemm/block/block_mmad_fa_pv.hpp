@@ -144,11 +144,23 @@ public:
             // AIC 轮询直到两个 subblock 都写完（每次读前 dcci 失效 DCache，保证读到新值）。
             AscendC::GlobalTensor<int32_t> gF;
             gF.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(flagGmAddr) + 2u * useCore, 2);
+            uint32_t spins = 0;
+            uint32_t seen = 0;
+            constexpr uint32_t MAX_SPIN = 2000000u;   // 有界：超时就把看到的情况打出来，不要挂死
             while (true) {
                 AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
                                                   AscendC::DcciDst::CACHELINE_OUT>(gF);
-                if (gF.GetValue(0) != 0 && gF.GetValue(1) != 0) {
+                seen = static_cast<uint32_t>(gF.GetValue(0)) | (static_cast<uint32_t>(gF.GetValue(1)) << 1);
+                if (seen == 3u || ++spins > MAX_SPIN) {
                     break;
+                }
+            }
+#if defined(FAT_TRACE_PV)
+            FATPV("4 GM poll done");
+#endif
+            if (seen != 3u) {
+                if (AscendC::GetBlockIdx() == 0) {
+                    AscendC::PRINTF("[PV] GM poll TIMEOUT: seen=%u spins=%u (bit0=sub0,bit1=sub1)\n", seen, spins);
                 }
             }
             gF.SetValue(0, 0);
