@@ -32,6 +32,9 @@ void fat(uint64_t hwSyncAddr, uint32_t coreNum, void* stream,
 // 让 host 侧只需要调这一个函数就能拿到总大小。
 size_t get_fat_workspace_size(uint32_t coreNum, uint32_t B_q, uint32_t B_k, uint32_t headDim);
 
+// 诊断用：最小 AIC<->AIV 往返测试。out 至少 4 个 int32。
+void pingpong(uint64_t hwSyncAddr, uint32_t coreNum, void* stream, uint8_t* out);
+
 } // namespace catlass_kernel
 
 #endif // CATLASS_FAT_KERNEL_H_
