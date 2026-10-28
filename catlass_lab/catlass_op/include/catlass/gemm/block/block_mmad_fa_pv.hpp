@@ -145,22 +145,22 @@ public:
             AscendC::GlobalTensor<int32_t> gF;
             gF.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(flagGmAddr) + 2u * useCore, 2);
             uint32_t spins = 0;
-            uint32_t seen = 0;
-            constexpr uint32_t MAX_SPIN = 300000000u;   // 有界：超时就把看到的情况打出来，不要挂死
+            uint32_t c7 = 0;      // 看到入口探针 7 的次数
+            uint32_t c1 = 0;      // 看到 softmax 完成 1 的次数
+            uint32_t last0 = 9999, last1 = 9999;
+            constexpr uint32_t MAX_SPIN = 300000000u;
             while (true) {
                 // 读方向必须 invalidate（CACHELINE_ALL），CACHELINE_OUT 只刷脏行、读仍是旧值
                 AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
                                                   AscendC::DcciDst::CACHELINE_ALL>(gF);
-                {
-                    const uint32_t v0 = static_cast<uint32_t>(gF.GetValue(0));
-                    const uint32_t v1 = static_cast<uint32_t>(gF.GetValue(1));
-                    // 记录"曾经看到过的最大值"，区分 0(没写) / 7(并发探针) / 1(softmax 完成)
-                    if (v0 > seen) { seen = v0; }
-                    if (v1 > seen) { seen = v1; }
-                    if (v0 == 1u && v1 == 1u) {
-                        seen = 100u;   // 正常完成
-                        break;
-                    }
+                const uint32_t v0 = static_cast<uint32_t>(gF.GetValue(0));
+                const uint32_t v1 = static_cast<uint32_t>(gF.GetValue(1));
+                last0 = v0;
+                last1 = v1;
+                if (v0 == 7u) { ++c7; }
+                if (v0 == 1u) { ++c1; }
+                if (v0 == 1u && v1 == 1u) {
+                    break;
                 }
                 if (++spins > MAX_SPIN) {
                     break;
@@ -169,9 +169,10 @@ public:
 #if defined(FAT_TRACE_PV)
             FATPV("4 GM poll done");
 #endif
-            if (seen != 100u) {
+            if (!(last0 == 1u && last1 == 1u)) {
                 if (AscendC::GetBlockIdx() == 0) {
-                    AscendC::PRINTF("[PV] GM poll TIMEOUT: seen=%u spins=%u (bit0=sub0,bit1=sub1)\n", seen, spins);
+                    AscendC::PRINTF("[PV] GM poll TIMEOUT spins=%u last=(%u,%u) saw7=%u saw1=%u\n",
+                                    spins, last0, last1, c7, c1);
                 }
             }
             gF.SetValue(0, 0);
