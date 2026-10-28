@@ -17,6 +17,7 @@ bench_fa.py —— CATLASS FA (catlass_op) vs Triton-Ascend FA (triton_lab) 的�
     python3 bench/bench_fa.py --skip-correctness
     python3 bench/bench_fa.py --peak-tflops 320
 """
+
 import argparse
 import math
 import os
@@ -62,10 +63,16 @@ def make_catlass(so_path):
     torch.ops.load_library(so_path)
 
     def run(q_bnhd, k_bnhd, v_bnhd, causal, block_dim=0):
-        return torch.ops.catlass.fat(q_bnhd, k_bnhd, v_bnhd,
-                                     catlass_mask(q_bnhd.device, causal),
-                                     1.0 / math.sqrt(q_bnhd.size(-1)),
-                                     0, block_dim)
+        return torch.ops.catlass.fat(
+            q_bnhd,
+            k_bnhd,
+            v_bnhd,
+            catlass_mask(q_bnhd.device, causal),
+            1.0 / math.sqrt(q_bnhd.size(-1)),
+            0,
+            block_dim,
+        )
+
     return run
 
 
@@ -91,13 +98,15 @@ def make_vendor():
         if key not in _mask:
             # atten_mask 语义：True = 被屏蔽（不参与计算）
             # causal → 屏蔽上三角（future），对角线保留（自己看自己）
-            _mask[key] = torch.triu(torch.ones((n, n), dtype=torch.bool, device=device), diagonal=1)
+            _mask[key] = torch.triu(
+                torch.ones((n, n), dtype=torch.bool, device=device), diagonal=1
+            )
         return _mask[key]
 
     def _call(q, k, v, causal, variant):
         B, N, H, D = q.shape
         kw = dict(head_num=H, input_layout="BSND", scale=1.0 / math.sqrt(D))
-        if causal:                                  # ★ full 模式【不能】传 mask
+        if causal:  # ★ full 模式【不能】传 mask
             if variant["mask"]:
                 n = variant["mask_n"] if variant["mask_n"] else N
                 kw["atten_mask"] = _get_mask(n, q.device)
@@ -107,13 +116,13 @@ def make_vendor():
         return out[0] if isinstance(out, (tuple, list)) else out
 
     CAUSAL_VARIANTS = [
-        dict(mask=True,  mask_n=None, sparse=0),   # 显式 [N,N] mask（实测你的版本可用）
-        dict(mask=True,  mask_n=2048, sparse=0),   # 显式 [2048,2048] mask
-        dict(mask=False, mask_n=None, sparse=2),   # 只给 sparse_mode
+        dict(mask=True, mask_n=None, sparse=0),  # 显式 [N,N] mask（实测你的版本可用）
+        dict(mask=True, mask_n=2048, sparse=0),  # 显式 [2048,2048] mask
+        dict(mask=False, mask_n=None, sparse=2),  # 只给 sparse_mode
     ]
     FULL_VARIANTS = [
-        dict(mask=False, mask_n=None, sparse=None),# 不传任何 mask（= 全通）
-        dict(mask=False, mask_n=None, sparse=0),   # 显式声明 default 模式
+        dict(mask=False, mask_n=None, sparse=None),  # 不传任何 mask（= 全通）
+        dict(mask=False, mask_n=None, sparse=0),  # 显式声明 default 模式
     ]
 
     def run(q_bnhd, k_bnhd, v_bnhd, causal, block_dim=0):
@@ -122,22 +131,23 @@ def make_vendor():
             return _call(q_bnhd, k_bnhd, v_bnhd, causal, _picked[key])
 
         last = None
-        for var in (CAUSAL_VARIANTS if causal else FULL_VARIANTS):
+        for var in CAUSAL_VARIANTS if causal else FULL_VARIANTS:
             try:
                 out = _call(q_bnhd, k_bnhd, v_bnhd, causal, var)
                 torch.npu.synchronize()
                 _picked[key] = var
                 print(f"  [vendor] causal={causal} 采用变体: {var}")
                 return out
-            except Exception as e:             # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 last = e
         raise RuntimeError(f"npu_fusion_attention 所有变体都失败，最后一个错误: {last}")
+
     return run
 
 
 def make_triton():
     sys.path.insert(0, os.path.join(ROOT, "triton_lab"))
-    from kernels.flash_attention.fa_fwd import fla_fwd   # noqa: E402
+    from kernels.flash_attention.fa_fwd import fla_fwd  # noqa: E402
 
     def run(q_bnhd, k_bnhd, v_bnhd, causal, block_dim=0):
         # ⚠ triton_lab 的 fla_fwd 用的是 token-major [B, N, H, D]
@@ -148,9 +158,11 @@ def make_triton():
         except TypeError:
             if causal:
                 raise RuntimeError(
-                    "fla_fwd 还不支持 causal 参数 —— 先在 triton_lab 里实现（见 bench/README.md）")
+                    "fla_fwd 还不支持 causal 参数 —— 先在 triton_lab 里实现（见 bench/README.md）"
+                )
             o, _lse = fla_fwd(q_bnhd, k_bnhd, v_bnhd)
         return o
+
     return run
 
 
@@ -182,7 +194,7 @@ def timeit(fn, warmup=WARMUP, iters=ITERS, repeats=REPEATS):
             fn()
         end.record()
         torch.npu.synchronize()
-        samples.append(start.elapsed_time(end) / iters)   # ms / iter
+        samples.append(start.elapsed_time(end) / iters)  # ms / iter
 
     med = statistics.median(samples)
     lo, hi = min(samples), max(samples)
@@ -199,16 +211,29 @@ def flops_of(batch, heads, n, d, causal):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", choices=["catlass", "triton", "vendor"], default=None)
-    ap.add_argument("--graph", action="store_true",
-                    help="对 triton 后端启用图捕获（消除 Python launcher 开销；"
-                         "只在 device < 0.42ms 时有收益，N<=1024）")
-    ap.add_argument("--graph-copy", action="store_true",
-                    help="图捕获时把输入 copy_ 也计入（默认不计：纯 replay = device-only 时间）")
+    ap.add_argument(
+        "--graph",
+        action="store_true",
+        help="对 triton 后端启用图捕获（消除 Python launcher 开销；"
+        "只在 device < 0.42ms 时有收益，N<=1024）",
+    )
+    ap.add_argument(
+        "--graph-copy",
+        action="store_true",
+        help="图捕获时把输入 copy_ 也计入（默认不计：纯 replay = device-only 时间）",
+    )
     ap.add_argument("--mode", choices=["full", "causal", "both"], default="both")
     ap.add_argument("--skip-correctness", action="store_true")
-    ap.add_argument("--peak-tflops", type=float, default=None,
-                    help="datasheet 峰值 fp16 TFLOPS，填了才输出 %%peak")
-    ap.add_argument("--so", default=os.path.join(ROOT, "catlass_lab/catlass_op/build/libcatlass_fat.so"))
+    ap.add_argument(
+        "--peak-tflops",
+        type=float,
+        default=None,
+        help="datasheet 峰值 fp16 TFLOPS，填了才输出 %%peak",
+    )
+    ap.add_argument(
+        "--so",
+        default=os.path.join(ROOT, "catlass_lab/catlass_op/build/libcatlass_fat.so"),
+    )
     ap.add_argument("--atol", type=float, default=2e-2)
     args = ap.parse_args()
 
@@ -220,7 +245,7 @@ def main():
     if args.only in (None, "vendor"):
         try:
             backends["vendor"] = make_vendor()
-        except Exception as e:                       # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             print(f"跳过 vendor 后端: {e}")
 
     modes = [False, True] if args.mode == "both" else [args.mode == "causal"]
@@ -229,9 +254,11 @@ def main():
     print(f"warmup={WARMUP} iters={ITERS} repeats={REPEATS}（每轮取中位数）\n")
 
     rows = []
-    for (batch, heads, n, d) in CASES:
+    for batch, heads, n, d in CASES:
         if d != 128:
-            print(f"skip B={batch} H={heads} N={n} D={d}（CATLASS 只支持 head_dim=128）")
+            print(
+                f"skip B={batch} H={heads} N={n} D={d}（CATLASS 只支持 head_dim=128）"
+            )
             continue
 
         torch.manual_seed(0)
@@ -243,20 +270,25 @@ def main():
 
         for causal in modes:
             tag = "causal" if causal else "full  "
-            ref = None if args.skip_correctness else golden(q.cpu(), k.cpu(), v.cpu(), causal)
+            ref = (
+                None
+                if args.skip_correctness
+                else golden(q.cpu(), k.cpu(), v.cpu(), causal)
+            )
 
             for name, fn in backends.items():
                 tag_g = ""
                 gf = None
                 if args.graph and name == "triton":
                     sys.path.insert(0, HERE)
-                    from graph_fa import GraphedFLA      # noqa: PLC0415
+                    from graph_fa import GraphedFLA  # noqa: PLC0415
+
                     gf = GraphedFLA(batch, n, heads, d, causal=causal)
                     if args.graph_copy:
-                        call = lambda: gf(q, k, v)       # 图 + 输入拷贝（真实口径）
+                        call = lambda: gf(q, k, v)  # 图 + 输入拷贝（真实口径）
                         tag_g = " [图+拷贝]"
                     else:
-                        call = gf.replay_only            # 纯 replay（device-only）
+                        call = gf.replay_only  # 纯 replay（device-only）
                         tag_g = " [图 replay-only]"
                 else:
                     call = lambda: fn(q, k, v, causal)
@@ -264,14 +296,16 @@ def main():
                 # ---- 闸门 ----
                 if ref is not None:
                     try:
-                        o = (gf(q, k, v) if gf is not None else fn(q, k, v, causal))
+                        o = gf(q, k, v) if gf is not None else fn(q, k, v, causal)
                         torch.npu.synchronize()
-                    except Exception as e:                  # noqa: BLE001
+                    except Exception as e:  # noqa: BLE001
                         print(f"  [{tag}] {name:<8} 跑不通: {e}")
                         continue
                     err = (o.cpu().float() - ref).abs().max().item()
                     ok = err < args.atol
-                    print(f"  [{tag}] {'OK ' if ok else 'FAIL'} {name:<8} max_err={err:.5f}")
+                    print(
+                        f"  [{tag}] {'OK ' if ok else 'FAIL'} {name:<8} max_err={err:.5f}"
+                    )
                     if not ok:
                         print(f"           → 跳过计时（算错的数字没有意义）")
                         continue
@@ -279,23 +313,31 @@ def main():
                 # ---- 计时 ----
                 try:
                     med, lo, hi, spread = timeit(call)
-                except Exception as e:                      # noqa: BLE001
+                except Exception as e:  # noqa: BLE001
                     print(f"  [{tag}] {name:<8} 计时失败: {e}")
                     continue
                 f = flops_of(batch, heads, n, d, causal)
                 tflops = f / (med * 1e-3) / 1e12
-                peak = f"  {100.0 * tflops / args.peak_tflops:5.1f}% peak" if args.peak_tflops else ""
+                peak = (
+                    f"  {100.0 * tflops / args.peak_tflops:5.1f}% peak"
+                    if args.peak_tflops
+                    else ""
+                )
                 warn = "  ⚠ 波动大" if spread > 0.10 else ""
-                print(f"  [{tag}]     {name:<8}{tag_g} {med:8.3f} ms  [{lo:.3f}, {hi:.3f}]  "
-                      f"{tflops:7.1f} TFLOPS{peak}{warn}")
+                print(
+                    f"  [{tag}]     {name:<8}{tag_g} {med:8.3f} ms  [{lo:.3f}, {hi:.3f}]  "
+                    f"{tflops:7.1f} TFLOPS{peak}{warn}"
+                )
                 rows.append((name, causal, batch, heads, n, med, tflops))
 
                 # 顺便把 device-only 时间也打出来，方便和上面的数对比
                 if gf is not None:
                     med_r, lo_r, hi_r, _ = timeit(gf.replay_only)
-                    print(f"  [{tag}]       └─ device-only (纯 replay) {med_r:8.3f} ms  "
-                          f"[{lo_r:.3f}, {hi_r:.3f}]")
-                    del gf                                # 及时释放图内存池
+                    print(
+                        f"  [{tag}]       └─ device-only (纯 replay) {med_r:8.3f} ms  "
+                        f"[{lo_r:.3f}, {hi_r:.3f}]"
+                    )
+                    del gf  # 及时释放图内存池
         print()
 
     # ---- 汇总 ----
@@ -304,22 +346,30 @@ def main():
         for name, causal, batch, heads, n, med, tflops in rows:
             by_case.setdefault((causal, batch, heads, n), {})[name] = med
         print("=" * 74)
-        print(f"{'mode':<8}{'case':<20}{'catlass':>11}{'triton':>11}{'vendor':>11}"
-              f"{'triton/vendor':>15}")
-        for (causal, batch, heads, n), d_ in sorted(by_case.items(), key=lambda x: (x[0][0], x[0][3])):
+        print(
+            f"{'mode':<8}{'case':<20}{'catlass':>11}{'triton':>11}{'vendor':>11}"
+            f"{'triton/vendor':>15}"
+        )
+        for (causal, batch, heads, n), d_ in sorted(
+            by_case.items(), key=lambda x: (x[0][0], x[0][3])
+        ):
             c = d_.get("catlass", float("nan"))
             t = d_.get("triton", float("nan"))
             vd = d_.get("vendor", float("nan"))
             ratio = t / vd if vd == vd and vd > 0 else float("nan")
             mode = "causal" if causal else "full"
-            print(f"{mode:<8}{f'B{batch} H{heads} N{n}':<20}{c:>11.3f}{t:>11.3f}{vd:>11.3f}"
-                  f"{ratio:>15.2f}x")
+            print(
+                f"{mode:<8}{f'B{batch} H{heads} N{n}':<20}{c:>11.3f}{t:>11.3f}{vd:>11.3f}"
+                f"{ratio:>15.2f}x"
+            )
         print("=" * 74)
         print("triton/vendor > 1 表示我们的 Triton kernel 比厂商慢，< 1 表示更快")
         if args.graph:
             print("⚠ 本次启用了图捕获：数字里已没有 Triton 的 Python launcher 开销，")
             print("  不可与未开图的结果、或与 CATLASS（C++ 直调）横向比较。")
-        print("注意：causal 行两边 FLOPs 相同，但绝对 FLOPs 只有 full 的一半，不要跨行比较 TFLOPS")
+        print(
+            "注意：causal 行两边 FLOPs 相同，但绝对 FLOPs 只有 full 的一半，不要跨行比较 TFLOPS"
+        )
 
 
 if __name__ == "__main__":

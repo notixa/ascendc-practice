@@ -29,50 +29,7 @@ option(FAT_NO_OPCOMMAND "Bypass torch_npu OpCommand (debug stream deadlock)" OFF
 # 目的是判断「AIV 到底有没有被调度」：
 #   - 开了它，kernel 能跑完且 O 非 0  → AIV 跑过 ⇒ 之前是跨核 flag 收不到
 #   - 开了它，仍然卡死 / O 全 0      → AIV 根本没被调度
-option(FAT_NO_SYNC "Drop AIV cross-core waits (debug: is AIV scheduled?)" OFF)
 
-# 调试用：AIC 只做 QK，跳过 PV（配合 FAT_ENABLE_PRINT 用）
-# 目的：确认「QK + AIV softmax」这条链路是否完全正常，把问题隔离在 PV
-option(FAT_QK_ONLY "AIC does QK only, skip PV (debug)" OFF)
-
-# 调试用：在自己的 include 目录里放了一份带插桩的 block_mmad_fa_pv.hpp，
-# 用 include 路径优先来「影子替换」CATLASS 原版（不改 CATLASS 仓库）
-option(FAT_TRACE_PV "Use shadowed block_mmad_fa_pv.hpp with step traces (debug)" OFF)
-
-# 诊断：AIV 在 softmax【之前】就置 smReady（判断 AIV->AIC flag 机制是否可用）
-option(FAT_SM_EARLY "AIV sets smReady before softmax (debug)" OFF)
-
-# 诊断：AIC 不等 smReady 直接往下走（判断是否只有 AIV->AIC 的方向坏）
-option(FAT_PV_NO_WAIT "AIC skips the smReady wait (debug)" OFF)
-if(FAT_PV_NO_WAIT)
-  message(STATUS "AIC skips smReady wait: ON")
-  add_compile_definitions(FAT_PV_NO_WAIT=1)
-endif()
-if(FAT_SM_EARLY)
-  message(STATUS "smReady set BEFORE softmax: ON")
-  add_compile_definitions(FAT_SM_EARLY=1)
-endif()
-if(FAT_TRACE_PV)
-  message(STATUS "shadowed FAPV header with traces: ON")
-  add_compile_definitions(FAT_TRACE_PV=1)
-endif()
-if(FAT_QK_ONLY)
-  message(STATUS "QK only (PV skipped)")
-  add_compile_definitions(FAT_QK_ONLY=1)
-endif()
-if(FAT_NO_SYNC)
-  message(STATUS "AIV cross-core wait disabled")
-  add_compile_definitions(FAT_NO_SYNC=1)
-endif()
-if(FAT_NO_OPCOMMAND)
-  message(STATUS "OpCommand bypass: ON")
-  add_compile_definitions(FAT_NO_OPCOMMAND=1)
-endif()
-if(FAT_ENABLE_PRINT)
-  message(STATUS "device print: ON (--cce-enable-print)")
-  add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--cce-enable-print>)
-endif()
-add_compile_definitions(CATLASS_ARCH=${NPU_ARCH})
 add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-${NPU_ARCH}>)
 add_compile_options(
   $<$<COMPILE_LANGUAGE:ASC>:-Wno-macro-redefined>

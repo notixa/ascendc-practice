@@ -91,30 +91,7 @@ uint64_t GetHardwareSyncAddrOrThrow()
 
 namespace catlass_torch {
 
-// 诊断用：最小 AIC<->AIV 往返握手，不带计算。
-void pingpong(const at::Tensor& out, int64_t blockDim, int64_t stream_handle)
-{
-    TORCH_CHECK(out.scalar_type() == at::kInt, "out 必须是 int32");
-    TORCH_CHECK(out.numel() >= 4, "out 至少 4 个元素");
-    uint64_t hwSyncAddr = GetHardwareSyncAddrOrThrow();
-    printf("[host] pingpong hwSyncAddr = 0x%llx\n", (unsigned long long)hwSyncAddr);
-    fflush(stdout);
-    uint32_t coreNum = static_cast<uint32_t>(blockDim > 0 ? blockDim : 1);
-    void* stream = reinterpret_cast<void*>(static_cast<uintptr_t>(stream_handle));
-    catlass_kernel::pingpong(hwSyncAddr, coreNum, stream,
-                             static_cast<uint8_t*>(out.data_ptr()));
-}
-
-
-// 与 kernel/catlass_kernel.asc 里 L1TileShape = GemmShape<128,128,128> 保持一致
-static constexpr int64_t B_Q = 128;
-static constexpr int64_t B_K = 128;
-
-at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
-               const at::Tensor& mask, double scale, int64_t batch, int64_t blockDim,
-               int64_t stream_handle)
-{
-    // ---------------- 1. 基础校验 ----------------
+// ---------------- 1. 基础校验 ----------------
     TORCH_CHECK(q.device().type() == c10::DeviceType::PrivateUse1, "q must be on NPU");
     TORCH_CHECK(k.device().type() == c10::DeviceType::PrivateUse1, "k must be on NPU");
     TORCH_CHECK(v.device().type() == c10::DeviceType::PrivateUse1, "v must be on NPU");
@@ -242,11 +219,9 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
 TORCH_LIBRARY(catlass, m)
 {
     m.def("fat(Tensor q, Tensor k, Tensor v, Tensor mask, float scale, int batch, int blockDim, int stream=0) -> Tensor");
-    m.def("pingpong(Tensor out, int blockDim, int stream=0) -> ()");
 }
 
 TORCH_LIBRARY_IMPL(catlass, PrivateUse1, m)
 {
     m.impl("fat", catlass_torch::fat);
-    m.impl("pingpong", catlass_torch::pingpong);
 }
