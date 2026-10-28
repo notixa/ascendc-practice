@@ -206,7 +206,11 @@ public:
                         pGm, sGm, layoutP, layoutS, onlineSoftmaxShape, (j == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
                 }
 #if !defined(FAT_SM_EARLY)
-                if (t->use_gm_sync != 0u) {
+                if (t->dbg_sm_sub_only != 0u && AscendC::GetSubBlockIdx() != 0u) {
+                    // 诊断：只让 AIV subblock 0 参与跨核握手。
+                    // AIC 只置 1 个 token、只等 1 次；如果两个 subblock 都置 smReady，
+                    // AIC 侧每轮会残留 +1 个 token，语义就和 AIC->AIV 方向不一致了。
+                } else if (t->use_gm_sync != 0u) {
                     // GM 哨兵：单槽位（两个 AIV subblock 都往同一个槽写 1，幂等）。
                     // 用 CACHELINE_ALL（clean+invalidate）确保脏行真的刷到 GM。
                     AscendC::GlobalTensor<int32_t> gF;

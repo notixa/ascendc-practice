@@ -29,4 +29,5 @@ struct FATTiling {
     uint32_t use_gm_sync;       // 1 = 用 GM 哨兵替代 smReady（AIV->AIC flag 不通时的保底方案）
     uint32_t pad_;
     uint64_t flag_gm_addr;      // int32[2*coreNum]，host 侧清零
+    uint32_t dbg_sm_sub_only;   // 1 = 只让 AIV subblock 0 参与 smReady 握手
 };
