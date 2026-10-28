@@ -144,19 +144,6 @@ public:
         // [TRACE] 调完记得删
         if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] enter\n"); }
 
-        // ★ 并发性探针：AIV 一进入就往 GM 写 7（此时还没做任何等待）
-        {
-            __gm__ FATTiling* t0 = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
-            if (t0->use_gm_sync != 0u) {
-                AscendC::GlobalTensor<int32_t> gE;
-                gE.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(t0->flag_gm_addr) +
-                                       2u * AscendC::GetBlockIdx() + AscendC::GetSubBlockIdx(), 1);
-                gE.SetValue(0, 7);
-                AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
-                                                  AscendC::DcciDst::CACHELINE_OUT>(gE);
-            }
-        }
-
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
         if (t->dbg_sm_id != 0) { smReady.id = static_cast<Catlass::Arch::FlagID>(t->dbg_sm_id); }
         float scaleValue = t->scale;
@@ -220,15 +207,14 @@ public:
                 }
 #if !defined(FAT_SM_EARLY)
                 if (t->use_gm_sync != 0u) {
-                    // GM 哨兵：每个 subblock 写自己的槽位，AIC 轮询两个都非 0
+                    // GM 哨兵：单槽位（两个 AIV subblock 都往同一个槽写 1，幂等）。
+                    // 用 CACHELINE_ALL（clean+invalidate）确保脏行真的刷到 GM。
                     AscendC::GlobalTensor<int32_t> gF;
                     gF.SetGlobalBuffer(
-                        reinterpret_cast<__gm__ int32_t*>(t->flag_gm_addr) +
-                            2u * AscendC::GetBlockIdx() + AscendC::GetSubBlockIdx(),
-                        1);
+                        reinterpret_cast<__gm__ int32_t*>(t->flag_gm_addr) + AscendC::GetBlockIdx(), 1);
                     gF.SetValue(0, 1);
-                    AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
-                                                      AscendC::DcciDst::CACHELINE_OUT>(gF);
+                    AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
+                                                      AscendC::DcciDst::CACHELINE_ALL>(gF);
                 } else {
                 // 运行时扫 mode x pipe（默认 mode=2, pipe=PIPE_MTE3）
                 switch (t->dbg_sm_mode * 8u + t->dbg_sm_pipe) {

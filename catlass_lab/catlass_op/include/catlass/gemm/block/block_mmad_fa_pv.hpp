@@ -143,7 +143,7 @@ public:
             // GM 哨兵：AIV 写完 P 后往 flagGm[2*core] 和 [2*core+1] 各写 1。
             // AIC 轮询直到两个 subblock 都写完（每次读前 dcci 失效 DCache，保证读到新值）。
             AscendC::GlobalTensor<int32_t> gF;
-            gF.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(flagGmAddr) + 2u * useCore, 2);
+            gF.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(flagGmAddr) + useCore, 1);
             uint32_t spins = 0;
             uint32_t c7 = 0;      // 看到入口探针 7 的次数
             uint32_t c1 = 0;      // 看到 softmax 完成 1 的次数
@@ -154,12 +154,10 @@ public:
                 AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
                                                   AscendC::DcciDst::CACHELINE_ALL>(gF);
                 const uint32_t v0 = static_cast<uint32_t>(gF.GetValue(0));
-                const uint32_t v1 = static_cast<uint32_t>(gF.GetValue(1));
                 last0 = v0;
-                last1 = v1;
-                if (v0 == 7u) { ++c7; }
+                last1 = 0;
                 if (v0 == 1u) { ++c1; }
-                if (v0 == 1u && v1 == 1u) {
+                if (v0 == 1u) {
                     break;
                 }
                 if (++spins > MAX_SPIN) {
@@ -169,14 +167,13 @@ public:
 #if defined(FAT_TRACE_PV)
             FATPV("4 GM poll done");
 #endif
-            if (!(last0 == 1u && last1 == 1u)) {
+            if (last0 != 1u) {
                 if (AscendC::GetBlockIdx() == 0) {
                     AscendC::PRINTF("[PV] GM poll TIMEOUT spins=%u last=(%u,%u) saw7=%u saw1=%u\n",
                                     spins, last0, last1, c7, c1);
                 }
             }
             gF.SetValue(0, 0);
-            gF.SetValue(1, 0);
         } else {
         // 等待侧的 mode 也扫一遍：CANN 的 CrossCoreWaitFlag 有 <modeId, pipe> 模板参数，
         // CATLASS 的 Arch::CrossCoreWaitFlag 永远传默认 <0, PIPE_S>，
