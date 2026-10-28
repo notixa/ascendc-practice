@@ -114,8 +114,7 @@ public:
     void operator()(
         AscendC::GlobalTensor<ElementA> gA, AscendC::GlobalTensor<ElementB> gB, AscendC::GlobalTensor<ElementC> gC,
         LayoutA layoutA, LayoutB layoutB, LayoutC layoutC, GemmCoord actualShape, uint32_t& pingpongFlag,
-        Arch::CrossCoreFlag softmaxReady, uint32_t smWaitMode,
-        uint64_t flagGmAddr, uint32_t useGmSync, uint32_t useCore)
+        Arch::CrossCoreFlag softmaxReady)
     {
         LayoutAInL1 layoutAInL1 = LayoutAInL1::template MakeLayout<ElementA>(L1TileShape::M, L1TileShape::K);
         LayoutBInL1 layoutBInL1 = LayoutBInL1::template MakeLayout<ElementB>(L1TileShape::K, L1TileShape::N);
@@ -139,68 +138,9 @@ public:
         FATPV("3 copy V L1->L0 ok");
 
 #if !defined(FAT_PV_NO_WAIT)
-        if (useGmSync != 0u) {
-            // GM 哨兵：AIV 写完 P 后往 flagGm[2*core] 和 [2*core+1] 各写 1。
-            // AIC 轮询直到两个 subblock 都写完（每次读前 dcci 失效 DCache，保证读到新值）。
-            AscendC::GlobalTensor<int32_t> gF;
-            gF.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(flagGmAddr) + useCore, 1);
-            uint32_t spins = 0;
-            uint32_t c7 = 0;      // 看到入口探针 7 的次数
-            uint32_t c1 = 0;      // 看到 softmax 完成 1 的次数
-            uint32_t last0 = 9999, last1 = 9999;
-            constexpr uint32_t MAX_SPIN = 5000000u;
-            while (true) {
-                // 读方向必须 invalidate（CACHELINE_ALL），CACHELINE_OUT 只刷脏行、读仍是旧值
-                AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
-                                                  AscendC::DcciDst::CACHELINE_ALL>(gF);
-                const uint32_t v0 = static_cast<uint32_t>(gF.GetValue(0));
-                last0 = v0;
-                last1 = 0;
-                if (v0 == 1u) { ++c1; }
-                if (v0 == 1u) {
-                    break;
-                }
-                if (++spins > MAX_SPIN) {
-                    break;
-                }
-            }
-#if defined(FAT_TRACE_PV)
-            FATPV("4 GM poll done");
-#endif
-            if (last0 != 1u) {
-                if (AscendC::GetBlockIdx() == 0) {
-                    AscendC::PRINTF("[PV] GM poll TIMEOUT spins=%u last=(%u,%u) saw7=%u saw1=%u\n",
-                                    spins, last0, last1, c7, c1);
-                }
-            }
-            // 诊断期不清零：留给 host 侧读最后的值
-        } else {
-        // 等待侧的 mode 也扫一遍：CANN 的 CrossCoreWaitFlag 有 <modeId, pipe> 模板参数，
-        // CATLASS 的 Arch::CrossCoreWaitFlag 永远传默认 <0, PIPE_S>，
-        // 而置位侧用的是 mode 2 —— 两边可能必须匹配。
-        // smWaitMode 编码 = pipeIdx*4 + modeId，pipeIdx: 0=S 1=V 2=MTE1 3=MTE2 4=MTE3 5=FIX
-#define FAT_WAIT4(IDX, PIPE_ENUM)                                                        \
-    case (IDX) * 4 + 0: AscendC::CrossCoreWaitFlag<0, PIPE_ENUM>(softmaxReady.id); break; \
-    case (IDX) * 4 + 1: AscendC::CrossCoreWaitFlag<1, PIPE_ENUM>(softmaxReady.id); break; \
-    case (IDX) * 4 + 2: AscendC::CrossCoreWaitFlag<2, PIPE_ENUM>(softmaxReady.id); break; \
-    case (IDX) * 4 + 3: AscendC::CrossCoreWaitFlag<3, PIPE_ENUM>(softmaxReady.id); break;
-        switch (smWaitMode) {
-            FAT_WAIT4(0, PIPE_S)
-            FAT_WAIT4(1, PIPE_V)
-            FAT_WAIT4(2, PIPE_MTE1)
-            FAT_WAIT4(3, PIPE_MTE2)
-            FAT_WAIT4(4, PIPE_MTE3)
-            FAT_WAIT4(5, PIPE_FIX)
-            default: AscendC::CrossCoreWaitFlag<0, PIPE_S>(softmaxReady.id); break;
-        }
-#undef FAT_WAIT4
-        }
+        Arch::CrossCoreWaitFlag(softmaxReady);
 #if defined(FAT_TRACE_PV)
         FATPV("4 got smReady");
-#endif
-#else
-#if defined(FAT_TRACE_PV)
-        FATPV("4 SKIPPED smReady wait");
 #endif
 #endif
         auto layoutTileA = layoutA.GetTileLayout(MakeCoord(actualShape.m(), actualShape.k()));

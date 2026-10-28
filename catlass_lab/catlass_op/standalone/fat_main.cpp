@@ -235,14 +235,15 @@ int main(int argc, char** argv)
     printf("[host] coreNum=%u  numTask=%u  workspace=%.1f KB\n", coreNum, numTask, wsSize / 1024.0);
 
     size_t off = 0;
-    const size_t sBytes = static_cast<size_t>(coreNum) * B_q * B_k * sizeof(float);
-    const size_t pBytes = static_cast<size_t>(coreNum) * B_q * B_k * 2;
+    constexpr size_t NSL = 3;   // = FATKernel::NUM_SLOTS
+    const size_t sBytes = NSL * static_cast<size_t>(coreNum) * B_q * B_k * sizeof(float);
+    const size_t pBytes = NSL * static_cast<size_t>(coreNum) * B_q * B_k * 2;
     uint8_t* pS = static_cast<uint8_t*>(wsDev) + off;
     off += sBytes;
     uint8_t* pP = static_cast<uint8_t*>(wsDev) + off;
     off += pBytes;
     uint8_t* pOt = static_cast<uint8_t*>(wsDev) + off;
-    off += static_cast<size_t>(coreNum) * B_q * D * sizeof(float);
+    off += NSL * static_cast<size_t>(coreNum) * B_q * D * sizeof(float);
     void* flagDev = static_cast<uint8_t*>(wsDev) + off;
     // 把 flag 区清零，并把它的设备地址传给 tiling
     {
