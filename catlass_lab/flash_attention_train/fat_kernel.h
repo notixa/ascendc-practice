@@ -217,8 +217,10 @@ public:
                     gF.SetGlobalBuffer(
                         reinterpret_cast<__gm__ int32_t*>(t->flag_gm_addr) + AscendC::GetBlockIdx(), 1);
                     gF.SetValue(0, 1);
-                    AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
-                                                      AscendC::DcciDst::CACHELINE_ALL>(gF);
+                    // 写侧必须用 CACHELINE_OUT：把脏行【写回】GM。
+                    // （CACHELINE_ALL 是 clean+invalidate，实测会把脏行丢掉 → AIC 永远读到 0）
+                    AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
+                                                      AscendC::DcciDst::CACHELINE_OUT>(gF);
                 } else {
                 // 运行时扫 mode x pipe（默认 mode=2, pipe=PIPE_MTE3）
                 switch (t->dbg_sm_mode * 8u + t->dbg_sm_pipe) {
