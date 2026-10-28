@@ -146,19 +146,29 @@ public:
             gF.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(flagGmAddr) + 2u * useCore, 2);
             uint32_t spins = 0;
             uint32_t seen = 0;
-            constexpr uint32_t MAX_SPIN = 2000000u;   // 有界：超时就把看到的情况打出来，不要挂死
+            constexpr uint32_t MAX_SPIN = 300000000u;   // 有界：超时就把看到的情况打出来，不要挂死
             while (true) {
                 AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
                                                   AscendC::DcciDst::CACHELINE_OUT>(gF);
-                seen = static_cast<uint32_t>(gF.GetValue(0)) | (static_cast<uint32_t>(gF.GetValue(1)) << 1);
-                if (seen == 3u || ++spins > MAX_SPIN) {
+                {
+                    const uint32_t v0 = static_cast<uint32_t>(gF.GetValue(0));
+                    const uint32_t v1 = static_cast<uint32_t>(gF.GetValue(1));
+                    // 记录"曾经看到过的最大值"，区分 0(没写) / 7(并发探针) / 1(softmax 完成)
+                    if (v0 > seen) { seen = v0; }
+                    if (v1 > seen) { seen = v1; }
+                    if (v0 == 1u && v1 == 1u) {
+                        seen = 100u;   // 正常完成
+                        break;
+                    }
+                }
+                if (++spins > MAX_SPIN) {
                     break;
                 }
             }
 #if defined(FAT_TRACE_PV)
             FATPV("4 GM poll done");
 #endif
-            if (seen != 3u) {
+            if (seen != 100u) {
                 if (AscendC::GetBlockIdx() == 0) {
                     AscendC::PRINTF("[PV] GM poll TIMEOUT: seen=%u spins=%u (bit0=sub0,bit1=sub1)\n", seen, spins);
                 }
