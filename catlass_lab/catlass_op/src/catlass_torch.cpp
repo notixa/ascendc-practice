@@ -97,6 +97,8 @@ void pingpong(const at::Tensor& out, int64_t blockDim, int64_t stream_handle)
     TORCH_CHECK(out.scalar_type() == at::kInt, "out 必须是 int32");
     TORCH_CHECK(out.numel() >= 4, "out 至少 4 个元素");
     uint64_t hwSyncAddr = GetHardwareSyncAddrOrThrow();
+    printf("[host] pingpong hwSyncAddr = 0x%llx\n", (unsigned long long)hwSyncAddr);
+    fflush(stdout);
     uint32_t coreNum = static_cast<uint32_t>(blockDim > 0 ? blockDim : 1);
     void* stream = reinterpret_cast<void*>(static_cast<uintptr_t>(stream_handle));
     catlass_kernel::pingpong(hwSyncAddr, coreNum, stream,
@@ -217,6 +219,8 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
 
     // ★ AIC<->AIV 跨核 flag 的硬件同步基地址（fai.cpp 同样要做）
     const uint64_t hwSyncAddr = GetHardwareSyncAddrOrThrow();
+    printf("[host] fat hwSyncAddr = 0x%llx\n", (unsigned long long)hwSyncAddr);
+    fflush(stdout);
 
     RUN_NPU_FUNC(catlass_kernel::fat, hwSyncAddr, static_cast<uint32_t>(blockDim), stream,
                  reinterpret_cast<uint8_t*>(q3.data_ptr()),
