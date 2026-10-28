@@ -158,6 +158,19 @@ target_include_directories(catlass_fat PRIVATE
   ${CATLASS_INCLUDE_DIR}
   ${FA_KERNEL_DIR})
 
+# ---------------------------------------------------------------------------
+# 独立可执行（对照 examples/23 的 main）：
+#   同样的 kernel，exe 里能跑、shared library + torch 里卡死 → 定位嵌入方式的问题，
+#   同时也提供一个「无 Python launcher」的纯净性能口径。
+# ---------------------------------------------------------------------------
+add_executable(fat_bench standalone/fat_main.cpp)
+set_source_files_properties(standalone/fat_main.cpp PROPERTIES LANGUAGE ASC)
+target_include_directories(fat_bench PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CATLASS_INCLUDE_DIR}
+  ${FA_KERNEL_DIR})
+target_link_libraries(fat_bench PRIVATE m)
+
 target_link_libraries(catlass_fat
   ${TORCH_LIBRARIES}
   torch_npu
