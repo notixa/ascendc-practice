@@ -205,14 +205,29 @@ public:
                         pGm, sGm, layoutP, layoutS, onlineSoftmaxShape, (j == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
                 }
 #if !defined(FAT_SM_EARLY)
-                switch (t->dbg_sm_pipe) {
-                    case 0: Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady); break;
-                    case 1: Arch::CrossCoreSetFlag<0x2, PIPE_V>(smReady); break;
-                    case 2: Arch::CrossCoreSetFlag<0x2, PIPE_MTE2>(smReady); break;
-                    default: Arch::CrossCoreSetFlag<0x2, PIPE_S>(smReady); break;
+                // 运行时扫 mode x pipe（默认 mode=2, pipe=PIPE_MTE3）
+                switch (t->dbg_sm_mode * 8u + t->dbg_sm_pipe) {
+                    case 0 * 8 + 0: Arch::CrossCoreSetFlag<0, PIPE_MTE3>(smReady); break;
+                    case 0 * 8 + 1: Arch::CrossCoreSetFlag<0, PIPE_V>(smReady); break;
+                    case 0 * 8 + 2: Arch::CrossCoreSetFlag<0, PIPE_MTE2>(smReady); break;
+                    case 0 * 8 + 3: Arch::CrossCoreSetFlag<0, PIPE_S>(smReady); break;
+                    case 1 * 8 + 0: Arch::CrossCoreSetFlag<1, PIPE_MTE3>(smReady); break;
+                    case 1 * 8 + 1: Arch::CrossCoreSetFlag<1, PIPE_V>(smReady); break;
+                    case 1 * 8 + 2: Arch::CrossCoreSetFlag<1, PIPE_MTE2>(smReady); break;
+                    case 1 * 8 + 3: Arch::CrossCoreSetFlag<1, PIPE_S>(smReady); break;
+                    case 2 * 8 + 0: Arch::CrossCoreSetFlag<2, PIPE_MTE3>(smReady); break;
+                    case 2 * 8 + 1: Arch::CrossCoreSetFlag<2, PIPE_V>(smReady); break;
+                    case 2 * 8 + 2: Arch::CrossCoreSetFlag<2, PIPE_MTE2>(smReady); break;
+                    case 2 * 8 + 3: Arch::CrossCoreSetFlag<2, PIPE_S>(smReady); break;
+                    case 3 * 8 + 0: Arch::CrossCoreSetFlag<3, PIPE_MTE3>(smReady); break;
+                    case 3 * 8 + 1: Arch::CrossCoreSetFlag<3, PIPE_V>(smReady); break;
+                    case 3 * 8 + 2: Arch::CrossCoreSetFlag<3, PIPE_MTE2>(smReady); break;
+                    default:        Arch::CrossCoreSetFlag<3, PIPE_S>(smReady); break;
                 }
                 // [TRACE] 调完记得删
-                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] sm set (pipe=%d)\n", t->dbg_sm_pipe); }
+                if (AscendC::GetBlockIdx() == 0) {
+                    AscendC::PRINTF("[AIV] sm set (mode=%d pipe=%d id=%d)\n", t->dbg_sm_mode, t->dbg_sm_pipe, smReady.id);
+                }
 #endif
 #if !defined(FAT_NO_SYNC)
                 Arch::CrossCoreWaitFlag(pvReady);
