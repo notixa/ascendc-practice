@@ -26,4 +26,7 @@ struct FATTiling {
     uint32_t dbg_sm_pipe;  // 置位所用的 pipe: 0=MTE3 1=V 2=MTE2 3=S
     uint32_t dbg_sm_mode;  // 置位所用的 mode: 0,1,2,3（默认 2）
     uint32_t dbg_sm_wait_mode;  // 等待所用的 mode: 0,1,2,3（默认 0）
+    uint32_t use_gm_sync;       // 1 = 用 GM 哨兵替代 smReady（AIV->AIC flag 不通时的保底方案）
+    uint32_t pad_;
+    uint64_t flag_gm_addr;      // int32[2*coreNum]，host 侧清零
 };

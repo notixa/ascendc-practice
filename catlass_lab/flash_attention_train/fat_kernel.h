@@ -121,7 +121,7 @@ public:
                 if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] before PV\n"); }
                 mmadPV(
                     pGm, vGm[kvOffset], oTmpGm, layoutP, layoutV, layoutOTmp, actualShapePV, pingpongFlagPV, smReady,
-                    t->dbg_sm_wait_mode);
+                    t->dbg_sm_wait_mode, t->flag_gm_addr, t->use_gm_sync, AscendC::GetBlockIdx());
                 // [TRACE] 调完记得删
                 if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] after PV\n"); }
 #endif
@@ -206,6 +206,17 @@ public:
                         pGm, sGm, layoutP, layoutS, onlineSoftmaxShape, (j == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
                 }
 #if !defined(FAT_SM_EARLY)
+                if (t->use_gm_sync != 0u) {
+                    // GM 哨兵：每个 subblock 写自己的槽位，AIC 轮询两个都非 0
+                    AscendC::GlobalTensor<int32_t> gF;
+                    gF.SetGlobalBuffer(
+                        reinterpret_cast<__gm__ int32_t*>(t->flag_gm_addr) +
+                            2u * AscendC::GetBlockIdx() + AscendC::GetSubBlockIdx(),
+                        1);
+                    gF.SetValue(0, 1);
+                    AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
+                                                      AscendC::DcciDst::CACHELINE_OUT>(gF);
+                } else {
                 // 运行时扫 mode x pipe（默认 mode=2, pipe=PIPE_MTE3）
                 switch (t->dbg_sm_mode * 8u + t->dbg_sm_pipe) {
                     case 0 * 8 + 0: Arch::CrossCoreSetFlag<0, PIPE_MTE3>(smReady); break;
@@ -225,9 +236,10 @@ public:
                     case 3 * 8 + 2: Arch::CrossCoreSetFlag<3, PIPE_MTE2>(smReady); break;
                     default:        Arch::CrossCoreSetFlag<3, PIPE_S>(smReady); break;
                 }
+                }
                 // [TRACE] 调完记得删
                 if (AscendC::GetBlockIdx() == 0) {
-                    AscendC::PRINTF("[AIV] sm set (mode=%d pipe=%d id=%d)\n", t->dbg_sm_mode, t->dbg_sm_pipe, smReady.id);
+                    AscendC::PRINTF("[AIV] sm set (gm=%d mode=%d pipe=%d)\n", t->use_gm_sync, t->dbg_sm_mode, t->dbg_sm_pipe);
                 }
 #endif
 #if !defined(FAT_NO_SYNC)

@@ -150,11 +150,12 @@ int main(int argc, char** argv)
     uint32_t dbgSmPipe = (argc > 6) ? static_cast<uint32_t>(atoi(argv[6])) : 0;
     uint32_t dbgSmMode = (argc > 7) ? static_cast<uint32_t>(atoi(argv[7])) : 2;
     uint32_t dbgSmWaitMode = (argc > 8) ? static_cast<uint32_t>(atoi(argv[8])) : 0;
+    uint32_t useGmSync = (argc > 9) ? static_cast<uint32_t>(atoi(argv[9])) : 0;
     const uint32_t B_q = 128, B_k = 128;
     const uint32_t B = o.batch, N = o.n, H = o.h, D = o.d;
 
-    printf("=== fat_bench  N=%u H=%u D=%u B=%u causal=%d  dbg_sm_id=%u pipe=%u setmode=%u waitmode=%u ===\n",
-           N, H, D, B, o.causal, dbgSmId, dbgSmPipe, dbgSmMode, dbgSmWaitMode);
+    printf("=== fat_bench  N=%u H=%u D=%u B=%u causal=%d  dbg_sm_id=%u pipe=%u setmode=%u waitmode=%u gmsync=%u ===\n",
+           N, H, D, B, o.causal, dbgSmId, dbgSmPipe, dbgSmMode, dbgSmWaitMode, useGmSync);
 
     // ---------------- ACL 初始化（严格照 examples/23 的顺序） ----------------
     ACL_OK(aclInit(nullptr));
@@ -224,10 +225,10 @@ int main(int argc, char** argv)
     tiling.dbg_sm_pipe = dbgSmPipe;
     tiling.dbg_sm_mode = dbgSmMode;
     tiling.dbg_sm_wait_mode = dbgSmWaitMode;
-    ACL_OK(aclrtMemcpy(tilingDev, sizeof(FATTiling), &tiling, sizeof(FATTiling), ACL_MEMCPY_HOST_TO_DEVICE));
 
     // ---------------- workspace（公式必须和 catlass_kernel.asc 里的一致） ----------------
-    const size_t wsSize = catlass_kernel::get_fat_workspace_size(coreNum, B_q, B_k, D);
+    const size_t flagBytes = static_cast<size_t>(2) * coreNum * sizeof(int32_t);
+    const size_t wsSize = catlass_kernel::get_fat_workspace_size(coreNum, B_q, B_k, D) + flagBytes;
     void* wsDev = nullptr;
     ACL_OK(aclrtMalloc(&wsDev, wsSize, ACL_MEM_MALLOC_HUGE_FIRST));
     printf("[host] coreNum=%u  numTask=%u  workspace=%.1f KB\n", coreNum, numTask, wsSize / 1024.0);
@@ -240,6 +241,16 @@ int main(int argc, char** argv)
     uint8_t* pP = static_cast<uint8_t*>(wsDev) + off;
     off += pBytes;
     uint8_t* pOt = static_cast<uint8_t*>(wsDev) + off;
+    off += static_cast<size_t>(coreNum) * B_q * D * sizeof(float);
+    void* flagDev = static_cast<uint8_t*>(wsDev) + off;
+    // 把 flag 区清零，并把它的设备地址传给 tiling
+    {
+        std::vector<int32_t> z(static_cast<size_t>(2) * coreNum, 0);
+        ACL_OK(aclrtMemcpy(flagDev, flagBytes, z.data(), flagBytes, ACL_MEMCPY_HOST_TO_DEVICE));
+    }
+    tiling.use_gm_sync = useGmSync;
+    tiling.flag_gm_addr = reinterpret_cast<uint64_t>(flagDev);
+    ACL_OK(aclrtMemcpy(tilingDev, sizeof(FATTiling), &tiling, sizeof(FATTiling), ACL_MEMCPY_HOST_TO_DEVICE));
 
     // ---------------- launch ----------------
     printf("[host] launching ...\n");

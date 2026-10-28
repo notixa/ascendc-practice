@@ -114,7 +114,8 @@ public:
     void operator()(
         AscendC::GlobalTensor<ElementA> gA, AscendC::GlobalTensor<ElementB> gB, AscendC::GlobalTensor<ElementC> gC,
         LayoutA layoutA, LayoutB layoutB, LayoutC layoutC, GemmCoord actualShape, uint32_t& pingpongFlag,
-        Arch::CrossCoreFlag softmaxReady, uint32_t smWaitMode)
+        Arch::CrossCoreFlag softmaxReady, uint32_t smWaitMode,
+        uint64_t flagGmAddr, uint32_t useGmSync, uint32_t useCore)
     {
         LayoutAInL1 layoutAInL1 = LayoutAInL1::template MakeLayout<ElementA>(L1TileShape::M, L1TileShape::K);
         LayoutBInL1 layoutBInL1 = LayoutBInL1::template MakeLayout<ElementB>(L1TileShape::K, L1TileShape::N);
@@ -138,6 +139,21 @@ public:
         FATPV("3 copy V L1->L0 ok");
 
 #if !defined(FAT_PV_NO_WAIT)
+        if (useGmSync != 0u) {
+            // GM 哨兵：AIV 写完 P 后往 flagGm[2*core] 和 [2*core+1] 各写 1。
+            // AIC 轮询直到两个 subblock 都写完（每次读前 dcci 失效 DCache，保证读到新值）。
+            AscendC::GlobalTensor<int32_t> gF;
+            gF.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(flagGmAddr) + 2u * useCore, 2);
+            while (true) {
+                AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
+                                                  AscendC::DcciDst::CACHELINE_OUT>(gF);
+                if (gF.GetValue(0) != 0 && gF.GetValue(1) != 0) {
+                    break;
+                }
+            }
+            gF.SetValue(0, 0);
+            gF.SetValue(1, 0);
+        } else {
         // 等待侧的 mode 也扫一遍：CANN 的 CrossCoreWaitFlag 有 <modeId, pipe> 模板参数，
         // CATLASS 的 Arch::CrossCoreWaitFlag 永远传默认 <0, PIPE_S>，
         // 而置位侧用的是 mode 2 —— 两边可能必须匹配。
@@ -146,6 +162,7 @@ public:
             case 1: AscendC::CrossCoreWaitFlag<1, PIPE_S>(softmaxReady.id); break;
             case 2: AscendC::CrossCoreWaitFlag<2, PIPE_S>(softmaxReady.id); break;
             default: AscendC::CrossCoreWaitFlag<3, PIPE_S>(softmaxReady.id); break;
+        }
         }
 #if defined(FAT_TRACE_PV)
         FATPV("4 got smReady");
