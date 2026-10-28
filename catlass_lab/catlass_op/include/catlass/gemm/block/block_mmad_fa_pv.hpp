@@ -148,7 +148,7 @@ public:
             uint32_t c7 = 0;      // 看到入口探针 7 的次数
             uint32_t c1 = 0;      // 看到 softmax 完成 1 的次数
             uint32_t last0 = 9999, last1 = 9999;
-            constexpr uint32_t MAX_SPIN = 300000000u;
+            constexpr uint32_t MAX_SPIN = 5000000u;
             while (true) {
                 // 读方向必须 invalidate（CACHELINE_ALL），CACHELINE_OUT 只刷脏行、读仍是旧值
                 AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
@@ -173,7 +173,7 @@ public:
                                     spins, last0, last1, c7, c1);
                 }
             }
-            gF.SetValue(0, 0);
+            // 诊断期不清零：留给 host 侧读最后的值
         } else {
         // 等待侧的 mode 也扫一遍：CANN 的 CrossCoreWaitFlag 有 <modeId, pipe> 模板参数，
         // CATLASS 的 Arch::CrossCoreWaitFlag 永远传默认 <0, PIPE_S>，

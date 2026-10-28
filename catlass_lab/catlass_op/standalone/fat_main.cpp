@@ -267,6 +267,17 @@ int main(int argc, char** argv)
     ACL_OK(aclrtSynchronizeStream(stream));
     printf("[host] kernel finished\n");
 
+    // ---------------- 诊断：host 直接读 flag 区，看 AIV 到底写没写进去 ----------------
+    {
+        std::vector<int32_t> hf(static_cast<size_t>(2) * coreNum, -12345);
+        ACL_OK(aclrtMemcpy(hf.data(), flagBytes, flagDev, flagBytes, ACL_MEMCPY_DEVICE_TO_HOST));
+        printf("[host] flags after kernel: ");
+        for (uint32_t ci = 0; ci < coreNum; ++ci) {
+            printf("[%u]=%d ", ci, hf[ci]);
+        }
+        printf("\n");
+    }
+
     // ---------------- 校验 ----------------
     std::vector<uint16_t> ho(elems, 0);
     ACL_OK(aclrtMemcpy(ho.data(), elems * 2, oDev, elems * 2, ACL_MEMCPY_DEVICE_TO_HOST));
