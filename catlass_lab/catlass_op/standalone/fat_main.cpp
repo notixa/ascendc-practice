@@ -149,11 +149,12 @@ int main(int argc, char** argv)
     uint32_t dbgSmId = (argc > 5) ? static_cast<uint32_t>(atoi(argv[5])) : 0;
     uint32_t dbgSmPipe = (argc > 6) ? static_cast<uint32_t>(atoi(argv[6])) : 0;
     uint32_t dbgSmMode = (argc > 7) ? static_cast<uint32_t>(atoi(argv[7])) : 2;
+    uint32_t dbgSmWaitMode = (argc > 8) ? static_cast<uint32_t>(atoi(argv[8])) : 0;
     const uint32_t B_q = 128, B_k = 128;
     const uint32_t B = o.batch, N = o.n, H = o.h, D = o.d;
 
-    printf("=== fat_bench  N=%u H=%u D=%u B=%u causal=%d  dbg_sm_id=%u pipe=%u mode=%u ===\n",
-           N, H, D, B, o.causal, dbgSmId, dbgSmPipe, dbgSmMode);
+    printf("=== fat_bench  N=%u H=%u D=%u B=%u causal=%d  dbg_sm_id=%u pipe=%u setmode=%u waitmode=%u ===\n",
+           N, H, D, B, o.causal, dbgSmId, dbgSmPipe, dbgSmMode, dbgSmWaitMode);
 
     // ---------------- ACL 初始化（严格照 examples/23 的顺序） ----------------
     ACL_OK(aclInit(nullptr));
@@ -222,6 +223,7 @@ int main(int argc, char** argv)
     tiling.dbg_sm_id = dbgSmId;
     tiling.dbg_sm_pipe = dbgSmPipe;
     tiling.dbg_sm_mode = dbgSmMode;
+    tiling.dbg_sm_wait_mode = dbgSmWaitMode;
     ACL_OK(aclrtMemcpy(tilingDev, sizeof(FATTiling), &tiling, sizeof(FATTiling), ACL_MEMCPY_HOST_TO_DEVICE));
 
     // ---------------- workspace（公式必须和 catlass_kernel.asc 里的一致） ----------------

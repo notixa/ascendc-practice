@@ -120,7 +120,8 @@ public:
                 // [TRACE] 调完记得删
                 if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] before PV\n"); }
                 mmadPV(
-                    pGm, vGm[kvOffset], oTmpGm, layoutP, layoutV, layoutOTmp, actualShapePV, pingpongFlagPV, smReady);
+                    pGm, vGm[kvOffset], oTmpGm, layoutP, layoutV, layoutOTmp, actualShapePV, pingpongFlagPV, smReady,
+                    t->dbg_sm_wait_mode);
                 // [TRACE] 调完记得删
                 if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIC] after PV\n"); }
 #endif

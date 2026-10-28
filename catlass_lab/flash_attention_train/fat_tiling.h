@@ -25,4 +25,5 @@ struct FATTiling {
     uint32_t dbg_sm_id;    // 覆盖 smReady 的 flag id（1..7）
     uint32_t dbg_sm_pipe;  // 置位所用的 pipe: 0=MTE3 1=V 2=MTE2 3=S
     uint32_t dbg_sm_mode;  // 置位所用的 mode: 0,1,2,3（默认 2）
+    uint32_t dbg_sm_wait_mode;  // 等待所用的 mode: 0,1,2,3（默认 0）
 };
