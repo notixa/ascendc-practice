@@ -178,12 +178,22 @@ public:
         // 等待侧的 mode 也扫一遍：CANN 的 CrossCoreWaitFlag 有 <modeId, pipe> 模板参数，
         // CATLASS 的 Arch::CrossCoreWaitFlag 永远传默认 <0, PIPE_S>，
         // 而置位侧用的是 mode 2 —— 两边可能必须匹配。
-        switch (smWaitMode & 0x3u) {
-            case 0: AscendC::CrossCoreWaitFlag<0, PIPE_S>(softmaxReady.id); break;
-            case 1: AscendC::CrossCoreWaitFlag<1, PIPE_S>(softmaxReady.id); break;
-            case 2: AscendC::CrossCoreWaitFlag<2, PIPE_S>(softmaxReady.id); break;
-            default: AscendC::CrossCoreWaitFlag<3, PIPE_S>(softmaxReady.id); break;
+        // smWaitMode 编码 = pipeIdx*4 + modeId，pipeIdx: 0=S 1=V 2=MTE1 3=MTE2 4=MTE3 5=FIX
+#define FAT_WAIT4(IDX, PIPE_ENUM)                                                        \
+    case (IDX) * 4 + 0: AscendC::CrossCoreWaitFlag<0, PIPE_ENUM>(softmaxReady.id); break; \
+    case (IDX) * 4 + 1: AscendC::CrossCoreWaitFlag<1, PIPE_ENUM>(softmaxReady.id); break; \
+    case (IDX) * 4 + 2: AscendC::CrossCoreWaitFlag<2, PIPE_ENUM>(softmaxReady.id); break; \
+    case (IDX) * 4 + 3: AscendC::CrossCoreWaitFlag<3, PIPE_ENUM>(softmaxReady.id); break;
+        switch (smWaitMode) {
+            FAT_WAIT4(0, PIPE_S)
+            FAT_WAIT4(1, PIPE_V)
+            FAT_WAIT4(2, PIPE_MTE1)
+            FAT_WAIT4(3, PIPE_MTE2)
+            FAT_WAIT4(4, PIPE_MTE3)
+            FAT_WAIT4(5, PIPE_FIX)
+            default: AscendC::CrossCoreWaitFlag<0, PIPE_S>(softmaxReady.id); break;
         }
+#undef FAT_WAIT4
         }
 #if defined(FAT_TRACE_PV)
         FATPV("4 got smReady");
