@@ -38,6 +38,13 @@ option(FAT_QK_ONLY "AIC does QK only, skip PV (debug)" OFF)
 # 调试用：在自己的 include 目录里放了一份带插桩的 block_mmad_fa_pv.hpp，
 # 用 include 路径优先来「影子替换」CATLASS 原版（不改 CATLASS 仓库）
 option(FAT_TRACE_PV "Use shadowed block_mmad_fa_pv.hpp with step traces (debug)" OFF)
+
+# 诊断：AIV 在 softmax【之前】就置 smReady（判断 AIV->AIC flag 机制是否可用）
+option(FAT_SM_EARLY "AIV sets smReady before softmax (debug)" OFF)
+if(FAT_SM_EARLY)
+  message(STATUS "smReady set BEFORE softmax: ON")
+  add_compile_definitions(FAT_SM_EARLY=1)
+endif()
 if(FAT_TRACE_PV)
   message(STATUS "shadowed FAPV header with traces: ON")
   add_compile_definitions(FAT_TRACE_PV=1)

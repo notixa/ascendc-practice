@@ -182,6 +182,13 @@ public:
                 uint32_t kRowNum = (B_k < visibleEnd - j * B_k) ? B_k : visibleEnd - j * B_k;
 
                 GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, headDim};
+#if defined(FAT_SM_EARLY)
+                // 诊断：把 smReady 置位挪到 softmax 之前。
+                // 若这样 AIC 就能过 PV ⇒ AIV→AIC 的 flag 机制本身没问题，
+                // 问题在"softmax 之后那一次置位"（PIPE_MTE3 延迟置位没触发）。
+                Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
+                if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] sm set EARLY\n"); }
+#endif
                 if (isDiag) {
                     onlineSoftmax(
                         pGm, sGm, maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape, (j == 0) ? 1u : 0u,
@@ -195,9 +202,11 @@ public:
                     onlineSoftmax(
                         pGm, sGm, layoutP, layoutS, onlineSoftmaxShape, (j == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
                 }
+#if !defined(FAT_SM_EARLY)
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
                 // [TRACE] 调完记得删
                 if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[AIV] sm set\n"); }
+#endif
 #if !defined(FAT_NO_SYNC)
                 Arch::CrossCoreWaitFlag(pvReady);
 #endif
