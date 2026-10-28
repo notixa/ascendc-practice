@@ -148,8 +148,9 @@ public:
             uint32_t seen = 0;
             constexpr uint32_t MAX_SPIN = 300000000u;   // 有界：超时就把看到的情况打出来，不要挂死
             while (true) {
-                AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
-                                                  AscendC::DcciDst::CACHELINE_OUT>(gF);
+                // 读方向必须 invalidate（CACHELINE_ALL），CACHELINE_OUT 只刷脏行、读仍是旧值
+                AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
+                                                  AscendC::DcciDst::CACHELINE_ALL>(gF);
                 {
                     const uint32_t v0 = static_cast<uint32_t>(gF.GetValue(0));
                     const uint32_t v1 = static_cast<uint32_t>(gF.GetValue(1));
