@@ -103,14 +103,19 @@ using L0TileShapePV = Catlass::GemmShape<128, 128, 64>;
 // ---------------------------------------------------------------------------
 //   FAQK / FAPV 是"一次一个 tile、KV 循环由调用者写"的朴素变体；
 //   不带 I 的版本没有 blockTable、没有 nLoop/kvSeqlen 的隐式 clamp。
-using DispatchPolicyQK = Catlass::Gemm::MmadAtlasA2FAQK;
-using DispatchPolicyPV = Catlass::Gemm::MmadAtlasA2FAPV;
+using DispatchPolicyQK = Catlass::Gemm::MmadAtlasA2FAIQK<false, false>;
+using DispatchPolicyPV = Catlass::Gemm::MmadAtlasA2FAIPV<false, false>;
+using DispatchPolicyQKTail = Catlass::Gemm::MmadAtlasA2FAITailQK<false, false>;
+using DispatchPolicyPVTail = Catlass::Gemm::MmadAtlasA2FAITailPV<false, false>;
 
 using BlockMmadQK =
     Catlass::Gemm::Block::BlockMmad<DispatchPolicyQK, L1TileShapeQK, L0TileShapeQK, QType, KType, SType>;
 using BlockMmadPV =
     Catlass::Gemm::Block::BlockMmad<DispatchPolicyPV, L1TileShapePV, L0TileShapePV, PType, VType, OTempType>;
-
+using BlockMmadQKTail =
+    Catlass::Gemm::Block::BlockMmad<DispatchPolicyQKTail, L1TileShapeQK, L0TileShapeQK, QType, KType, SType>;
+using BlockMmadPVTail =
+    Catlass::Gemm::Block::BlockMmad<DispatchPolicyPVTail, L1TileShapePV, L0TileShapePV, PType, VType, OTempType>;
 // 配对：OnlineSoftmax（S→P，产出 dm/gl 到 UB） + RescaleO（oTemp→O，读 dm/gl）
 //   换成 _FD 变体时必须同时换成 CombineScale，不能单换一个
 using DispatchPolicyOnlineSoftmax = Catlass::Epilogue::EpilogueAtlasA2OnlineSoftmax;
@@ -124,6 +129,7 @@ using BlockEpilogueRescaleO =
 // ---------------------------------------------------------------------------
 // 5. 最终实例化
 // ---------------------------------------------------------------------------
-using FatKernelType = FATKernel<BlockMmadQK, BlockMmadPV, BlockEpilogueOnlineSoftmax, BlockEpilogueRescaleO>;
+using FatKernelType = FATKernel<
+    BlockMmadQK, BlockMmadPV, BlockMmadQKTail, BlockMmadPVTail, BlockEpilogueOnlineSoftmax, BlockEpilogueRescaleO>;
 
 } // namespace fat

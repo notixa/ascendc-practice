@@ -182,9 +182,15 @@ namespace catlass_torch {
     //   s     : [coreNum, B_q, B_k]     float
     //   p     : [coreNum, B_q, B_k]     half
     //   oTemp : [coreNum, B_q, headDim] float
-    auto sDev  = at::empty({blockDim * B_Q * B_K}, q.options().dtype(at::kFloat));
-    auto pDev  = at::empty({blockDim * B_Q * B_K}, q.options().dtype(at::kHalf));
-    auto otDev = at::empty({blockDim * B_Q * headDim}, q.options().dtype(at::kFloat));
+    // 形状必须与 kernel 的 spOffset / oTmpOffset 一致（公式见 fat_tiling.h 的 fat_ws）：
+    //   S/P : [B_q, B_k*STACK_NUM] × NUM_SLOTS × coreNum
+    //   oTmp: [B_q, headDim]       × NUM_SLOTS × coreNum
+    auto sDev  = at::empty({static_cast<int64_t>(fat_ws::ElemsS(blockDim, B_Q, B_K))},
+                           q.options().dtype(at::kFloat));
+    auto pDev  = at::empty({static_cast<int64_t>(fat_ws::ElemsP(blockDim, B_Q, B_K))},
+                           q.options().dtype(at::kHalf));
+    auto otDev = at::empty({static_cast<int64_t>(fat_ws::ElemsOt(blockDim, B_Q, headDim))},
+                           q.options().dtype(at::kFloat));
 
     auto o3 = at::empty_like(q3);
 

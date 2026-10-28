@@ -222,14 +222,16 @@ int main(int argc, char** argv)
     ACL_OK(aclrtMalloc(&wsDev, wsSize, ACL_MEM_MALLOC_HUGE_FIRST));
     printf("[host] coreNum=%u  numTask=%u  workspace=%.1f KB\n", coreNum, numTask, wsSize / 1024.0);
 
+    // 三段偏移必须与 kernel 里的 spOffset / oTmpOffset 寻址一致（公式见 fat_ws）
     size_t off = 0;
-    const size_t sBytes = static_cast<size_t>(coreNum) * B_q * B_k * sizeof(float);
-    const size_t pBytes = static_cast<size_t>(coreNum) * B_q * B_k * 2;
+    const size_t sBytes = fat_ws::BytesS(coreNum, B_q, B_k);
+    const size_t pBytes = fat_ws::BytesP(coreNum, B_q, B_k);
     uint8_t* pS = static_cast<uint8_t*>(wsDev) + off;
     off += sBytes;
     uint8_t* pP = static_cast<uint8_t*>(wsDev) + off;
     off += pBytes;
     uint8_t* pOt = static_cast<uint8_t*>(wsDev) + off;
+    off += fat_ws::BytesOt(coreNum, B_q, D);
     ACL_OK(aclrtMemcpy(tilingDev, sizeof(FATTiling), &tiling, sizeof(FATTiling), ACL_MEMCPY_HOST_TO_DEVICE));
 
     // ---------------- launch ----------------
