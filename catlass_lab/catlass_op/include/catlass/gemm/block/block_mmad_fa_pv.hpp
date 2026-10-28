@@ -137,8 +137,16 @@ public:
         copyL1ToL0B(l0BTensor[pingpongFlag], l1BTensor[pingpongFlag], layoutBInL0, layoutBInL1);
         FATPV("3 copy V L1->L0 ok");
 
+#if !defined(FAT_PV_NO_WAIT)
         Arch::CrossCoreWaitFlag(softmaxReady);
+#if defined(FAT_TRACE_PV)
         FATPV("4 got smReady");
+#endif
+#else
+#if defined(FAT_TRACE_PV)
+        FATPV("4 SKIPPED smReady wait");
+#endif
+#endif
         auto layoutTileA = layoutA.GetTileLayout(MakeCoord(actualShape.m(), actualShape.k()));
         copyGmToL1A(l1ATensor[pingpongFlag], gA, layoutAInL1, layoutTileA);
         FATPV("5 copy P->L1 ok");

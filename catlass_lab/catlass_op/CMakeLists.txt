@@ -41,6 +41,13 @@ option(FAT_TRACE_PV "Use shadowed block_mmad_fa_pv.hpp with step traces (debug)"
 
 # 诊断：AIV 在 softmax【之前】就置 smReady（判断 AIV->AIC flag 机制是否可用）
 option(FAT_SM_EARLY "AIV sets smReady before softmax (debug)" OFF)
+
+# 诊断：AIC 不等 smReady 直接往下走（判断是否只有 AIV->AIC 的方向坏）
+option(FAT_PV_NO_WAIT "AIC skips the smReady wait (debug)" OFF)
+if(FAT_PV_NO_WAIT)
+  message(STATUS "AIC skips smReady wait: ON")
+  add_compile_definitions(FAT_PV_NO_WAIT=1)
+endif()
 if(FAT_SM_EARLY)
   message(STATUS "smReady set BEFORE softmax: ON")
   add_compile_definitions(FAT_SM_EARLY=1)
