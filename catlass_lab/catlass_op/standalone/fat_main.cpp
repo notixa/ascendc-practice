@@ -273,6 +273,27 @@ int main(int argc, char** argv)
     printf("max_err = %.6f   (at %zu: got %.4f expect %.4f)\n", maxErr, badIdx,
            static_cast<double>(F16ToF32Exact(ho[badIdx])), static_cast<double>(F16ToF32Exact(hgold[badIdx])));
 
+    // ---- 按 q 块（每 B_q=128 个 token）分段统计误差，定位是哪个 i 坏 ----
+    {
+        const size_t rowElems = static_cast<size_t>(H) * D;   // 每个 token 的元素数
+        const size_t nBlk = (static_cast<size_t>(N) + 127) / 128;
+        printf("per-q-block max_err:");
+        for (size_t b = 0; b < nBlk; ++b) {
+            double be = 0.0;
+            const size_t p0 = b * 128, p1 = std::min<size_t>(p0 + 128, N);
+            for (size_t p = p0; p < p1; ++p) {
+                for (size_t d = 0; d < rowElems; ++d) {
+                    const size_t i = p * rowElems + d;
+                    const double e = std::fabs(static_cast<double>(F16ToF32Exact(ho[i])) -
+                                               static_cast<double>(F16ToF32Exact(hgold[i])));
+                    if (e > be) be = e;
+                }
+            }
+            printf("  i=%zu: %.6f", b, be);
+        }
+        printf("\n");
+    }
+
     // ---------------- 数值定位 dump：把 S / P / O 的第一行打出来 ----------------
     {
         std::vector<float> hS(8, -12345.f);
