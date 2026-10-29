@@ -91,6 +91,10 @@ uint64_t GetHardwareSyncAddrOrThrow()
 
 namespace catlass_torch {
 
+// 与 kernel/catlass_kernel.asc 里 L1TileShape = GemmShape<128,128,128> 保持一致
+static constexpr int64_t B_Q = 128;
+static constexpr int64_t B_K = 128;
+
 at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
                const at::Tensor& mask, double scale, int64_t batch, int64_t blockDim,
                int64_t stream_handle)
@@ -206,8 +210,6 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
 
     // ★ AIC<->AIV 跨核 flag 的硬件同步基地址（fai.cpp 同样要做）
     const uint64_t hwSyncAddr = GetHardwareSyncAddrOrThrow();
-    printf("[host] fat hwSyncAddr = 0x%llx\n", (unsigned long long)hwSyncAddr);
-    fflush(stdout);
 
     RUN_NPU_FUNC(catlass_kernel::fat, hwSyncAddr, static_cast<uint32_t>(blockDim), stream,
                  reinterpret_cast<uint8_t*>(q3.data_ptr()),
