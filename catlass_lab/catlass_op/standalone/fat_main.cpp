@@ -338,6 +338,18 @@ int main(int argc, char** argv)
             printf(" %.4f", a);
         }
         printf("\n");
+        // P = exp(S - m1)，未归一化（fp16 存于 GM，最后一个 stack 的 P）
+        printf("EXPECT P(512..519) = exp(s-m1):");
+        for (size_t j = 0; j < 8; ++j) {
+            double a = 0.0;
+            for (uint32_t d = 0; d < D; ++d) {
+                a += static_cast<double>(F16ToF32Exact(hq[d])) *
+                     static_cast<double>(F16ToF32Exact(hk[(split + j) * D + d]));
+            }
+            printf(" %.6f", std::exp(a / std::sqrt(static_cast<double>(D)) - m1));
+        }
+        printf("\n");
+
         // 同时给一份 keys 0..7 的，作为"取错偏移"的对照
         printf("EXPECT S(keys 0..7, 未scale)   :");
         for (size_t j = 0; j < 8; ++j) {
