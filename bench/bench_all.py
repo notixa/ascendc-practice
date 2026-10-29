@@ -102,7 +102,8 @@ def main():
     ap.add_argument("--shapes", nargs="*", default=None,
                     help="N:H:causal 列表，如 4096:8:0 1024:8:1；缺省用内置列表")
     ap.add_argument("--iters", type=int, default=20, help="CATLASS 每轮迭代数")
-    ap.add_argument("--core-num", type=int, default=8)
+    ap.add_argument("--core-num", type=int, default=20,
+                    help="CATLASS 的 AIC 核数（910B3 实测 20；24 会过订阅变慢）")
     ap.add_argument("--batch", type=int, default=1, help="CATLASS 的 batch（FAT_BATCH）")
     ap.add_argument("--skip-catlass", action="store_true")
     ap.add_argument("--skip-triton", action="store_true")
