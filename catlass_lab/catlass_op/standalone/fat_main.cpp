@@ -325,6 +325,21 @@ int main(int argc, char** argv)
         printf("EXPECT: oTmp1[0]=%.6f (E7 应等于它)  gl1=%.6f\n", ot1, gl1);
         printf("EXPECT: m0=%.6f m1=%.6f  dm=%.6f  gl_total=%.6f  go_total=%.6f  O[0]=%.6f\n",
                m0, m1, w0, glT, goT, goT / glT);
+        // 第二个 stack 各行（0..3）的真实 local max，用于和内核 E1 的 lm[0..3] 对比
+        printf("EXPECT m1(row0..3):");
+        for (size_t r = 0; r < 4; ++r) {
+            double mx = -1e30;
+            for (size_t t = split; t < N; ++t) {
+                double a = 0.0;
+                for (uint32_t d = 0; d < D; ++d) {
+                    a += static_cast<double>(F16ToF32Exact(hq[r * D + d])) *
+                         static_cast<double>(F16ToF32Exact(hk[t * D + d]));
+                }
+                mx = std::max(mx, a / std::sqrt(static_cast<double>(D)));
+            }
+            printf(" %.6f", mx);
+        }
+        printf("\n");
         printf("GOLDEN: O[0][0]=%.6f\n", static_cast<double>(F16ToF32Exact(hgold[0])));
 
         // GM 里残留的 S 是【最后一个 stack】的：N=768 时 = keys 512..767（未乘 scale）
