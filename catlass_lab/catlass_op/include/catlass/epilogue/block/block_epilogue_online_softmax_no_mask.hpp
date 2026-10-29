@@ -27,8 +27,9 @@
         AscendC::PipeBarrier<PIPE_V>();                                                   \
         AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID7);                             \
         AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID7);                            \
-        AscendC::PRINTF("[%d] " tag " %.6f %.6f\n", (int)AscendC::GetBlockIdx(),          \
-                        (float)(t).GetValue(i0), (float)(t).GetValue(i1));                \
+        AscendC::PRINTF("[%d] " tag " %d %d\n", (int)AscendC::GetBlockIdx(),              \
+                        (int)(((float)(t).GetValue(i0)) * 100000.0f),                      \
+                        (int)(((float)(t).GetValue(i1)) * 100000.0f));                     \
     } while (0)
 #else
 #define FAT_UB_DUMP(tag, t, i0, i1) do { } while (0)
