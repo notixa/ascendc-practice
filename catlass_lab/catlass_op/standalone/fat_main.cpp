@@ -456,8 +456,10 @@ int main(int argc, char** argv)
         printf("\n");
         // 关键对照：GM 里 S 的第 256..263 列（第二个 stack 时应为 keys 768..775）
         {
+            const size_t kSplit = 512;
             std::vector<float> s256(8, 0.f);
-            ACL_OK(aclrtMemcpy(s256.data(), 8 * sizeof(float), pS + 256, 8 * sizeof(float),
+            ACL_OK(aclrtMemcpy(s256.data(), 8 * sizeof(float),
+                               static_cast<uint8_t*>(pS) + 256 * sizeof(float), 8 * sizeof(float),
                                ACL_MEMCPY_DEVICE_TO_HOST));
             printf("S[0][256..263] 实际        =");
             for (int i = 0; i < 8; ++i) printf(" %.4f", s256[i]);
@@ -467,7 +469,7 @@ int main(int argc, char** argv)
                 double a = 0.0;
                 for (uint32_t d = 0; d < D; ++d) {
                     a += static_cast<double>(F16ToF32Exact(hq[d])) *
-                         static_cast<double>(F16ToF32Exact(hk[(split + 256 + j) * D + d]));
+                         static_cast<double>(F16ToF32Exact(hk[(kSplit + 256 + j) * D + d]));
                 }
                 printf(" %.4f", a);
             }
