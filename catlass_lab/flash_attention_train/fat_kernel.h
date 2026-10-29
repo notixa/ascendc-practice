@@ -154,23 +154,22 @@ public:
 
             uint32_t singleGroupHeads = 1;
             mmadQK.loadQGM(qGm[taskInfo.qOffset], layoutQ, taskInfo.qRowNum, singleGroupHeads, headNum);
+            uint32_t kvBaseOffset = taskInfo.b * N_k * headNum * headDim + taskInfo.h * headDim;
             for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM, stackIdx++) {
-                uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.visibleEnd - nIdx * B_k) ?
+                uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.noMaskEnd - nIdx * B_k) ?
                                        B_k * STACK_NUM :
-                                       taskInfo.visibleEnd - nIdx * B_k;
-                uint32_t kvOffset =
-                    taskInfo.b * N_k * headNum * headDim + nIdx * B_k * headNum * headDim + taskInfo.h * headDim;
+                                       taskInfo.noMaskEnd - nIdx * B_k;
 
                 GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, headDim};
                 mmadQK(
-                    qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
-                    actualShapeQK, nIdx, taskInfo.nLoop, B_q, taskInfo.noMaskEnd, headNum * headDim);
+                    qGm[taskInfo.qOffset], kGm[kvBaseOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
+                    actualShapeQK, nIdx, taskInfo.nLoop, B_k, taskInfo.noMaskEnd, headNum * headDim);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPV(
-                    pGm[spOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
-                    nIdx, taskInfo.nLoop, B_q, taskInfo.noMaskEnd, headNum * headDim, smReady);
+                    pGm[spOffset], vGm[kvBaseOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
+                    nIdx, taskInfo.nLoop, B_k, taskInfo.noMaskEnd, headNum * headDim, smReady);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
             }
             for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum;
@@ -178,21 +177,19 @@ public:
                 uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdx * B_k) ?
                                        B_k * STACK_NUM :
                                        taskInfo.visibleEnd - maskedIdx * B_k;
-                uint32_t kvOffset =
-                    taskInfo.b * N_k * headNum * headDim + maskedIdx * B_k * headNum * headDim + taskInfo.h * headDim;
 
                 GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, headDim};
                 mmadQKTail(
-                    qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
-                    actualShapeQK, maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim,
+                    qGm[taskInfo.qOffset], kGm[kvBaseOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
+                    actualShapeQK, maskedIdx, taskInfo.visibleKBlockNum, B_k, taskInfo.visibleEnd, headNum * headDim,
                     taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 K 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
                 FATT("Q");
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPVTail(
-                    pGm[spOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
-                    maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim, smReady,
+                    pGm[spOffset], vGm[kvBaseOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
+                    maskedIdx, taskInfo.visibleKBlockNum, B_k, taskInfo.visibleEnd, headNum * headDim, smReady,
                     taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 V 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
                 FATT("P");
