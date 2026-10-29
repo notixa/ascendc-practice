@@ -454,6 +454,26 @@ int main(int argc, char** argv)
         printf("S[0][0..7] =");
         for (int i = 0; i < 8; ++i) printf(" %.4f", hS[i]);
         printf("\n");
+        // 关键对照：GM 里 S 的第 256..263 列（第二个 stack 时应为 keys 768..775）
+        {
+            std::vector<float> s256(8, 0.f);
+            ACL_OK(aclrtMemcpy(s256.data(), 8 * sizeof(float), pS + 256, 8 * sizeof(float),
+                               ACL_MEMCPY_DEVICE_TO_HOST));
+            printf("S[0][256..263] 实际        =");
+            for (int i = 0; i < 8; ++i) printf(" %.4f", s256[i]);
+            printf("\n");
+            printf("EXPECT S(keys 768..775)    =");
+            for (size_t j = 0; j < 8; ++j) {
+                double a = 0.0;
+                for (uint32_t d = 0; d < D; ++d) {
+                    a += static_cast<double>(F16ToF32Exact(hq[d])) *
+                         static_cast<double>(F16ToF32Exact(hk[(split + 256 + j) * D + d]));
+                }
+                printf(" %.4f", a);
+            }
+            printf("\n");
+            printf("（若与 EXPECT S(512..519) 相同，则说明第 256 列被 key512 覆盖）\n");
+        }
         printf("P[0][0..7] =");
         for (int i = 0; i < 8; ++i) printf(" %.6f", (double)F16ToF32Exact(hP[i]));
         printf("\n");
