@@ -278,6 +278,7 @@ public:
                     pGm[spOffset], sGm[spOffset], layoutP, layoutS, onlineSoftmaxShape, (nIdx == 0) ? 1u : 0u,
                     taskInfo.qRowNum, 1u, 0u);
 
+                FATT("AIV: about to set sm (MTE3 sync, waits for MTE3 drain)");
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
                 FATT("AIV: sm set");
                 Arch::CrossCoreWaitFlag(pvReady);
@@ -303,6 +304,7 @@ public:
                     pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
                     (maskedIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
 
+                FATT("AIV: about to set sm (MTE3 sync, waits for MTE3 drain)");
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
                 Arch::CrossCoreWaitFlag(pvReady);
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
