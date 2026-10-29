@@ -1,7 +1,66 @@
 # CATLASS FA 卡死问题 —— 排查结论
 
-> 状态：**未解决**。已排除的假设、已验证的事实、下一步建议都在这里。
-> 代码已回退到调试前的干净状态（只保留 `standalone/fat_bench` 这个有用的调试/基准工具）。
+> 状态：**已解决**（根因见第 0 节）。M1 已跑通：`max_err ≈ 1e-3`，causal / 非 causal 均正确。
+> 后面各节是当时"未解决"阶段的排查记录，保留作为过程史料。
+
+
+---
+
+## 0. 真正根因（最终定位）
+
+**AIV 侧的 coreIdx 用错了。**
+
+```cpp
+// ✗ 错：AIV 有 2×coreNum 个核，直接拿 GetBlockIdx() 当 task 索引
+for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += GetBlockNum())
+
+// ✓ 对：两个 subcore（2k、2k+1）同属 AIC k，必须折算
+const uint32_t coreIdx = AscendC::GetBlockIdx() / AscendC::GetSubBlockNum();
+for (uint32_t taskIdx = coreIdx; taskIdx < numTask; taskIdx += GetBlockNum())
+```
+
+官方对应位置：`examples/23_flash_attention_infer/fai_kernel.cpp:453`
+（AIC 分支在 `:130`，直接用 `GetBlockIdx()`）。
+
+### 为什么这会造成"只有 AIV→AIC 不通"的假象
+
+`numTask = 1`、`GetBlockNum() = 8` 时，AIV blockIdx 0 进入循环，**1～15 全部跳过**。
+而 `__mix__(1,2)` 下 AIC k 的跨核 wait 是**汇聚**语义 —— 要它的两个 AIV subcore 都置位才放行。
+
+| 方向 | 语义 | 结果 |
+|---|---|---|
+| AIC → AIV | 1 对 2 **广播** | 置一次两个都能收到 → **通** |
+| AIV → AIC | 2 对 1 **汇聚** | 只来了 subcore 0 的置位 → **永久死锁** |
+
+于是所有"flag id / pipe / mode / dcci"的扫描全部无效 —— 根本不是同步机制的问题，
+而是**有一半的 AIV 根本没在干活**。
+
+### 定位它用的一次实验
+
+把打点改成不过滤、且带 `[blockIdx/blockNum]`，一次就暴露：
+
+```
+[0/8] AIV enter ... [15/8] AIV enter     ← 16 个都起来了
+[0/8] s   [0/8] m                        ← 但只有 subcore 0 走到 softmax/置位
+（[1/8] s / [1/8] m 永远缺席）
+```
+
+### 打点本身也踩过的三个坑（同样重要）
+
+1. **一次塞 19 条 PRINTF** → device 侧 print buffer 打满，后面的输出被静默丢弃，
+   误判成"卡在第 19 条"。单次打点应 ≤ 6 条。
+2. **去掉 `\n`** → `AscendC::PRINTF` 不换行就不 flush，输出全空，又误判成"一条都没执行"。
+3. **用模糊锚点（"到下一个注释分隔符"）做代码替换** → 把相邻函数头和 `B_Q/B_K` 常量一起删掉，
+   连续两次编译失败。改代码要用**整函数/整段**作原子单位，并 `git diff` 核对。
+
+### 另一个同源教训：benchmark 自身也要先验证
+
+`fat_bench` 的 `F32ToF16Exact` 查表从 `a=5` 起整体错位（`1.25` 编成 `4.0`、`2.0` 编成 `32.0`），
+导致实际喂进 kernel 的数据比预期大 16 倍、softmax 溢出成 one-hot；
+golden 的输出量化也用同一张坏表。表现是 `max_err = 8224`，看起来像 kernel 错，
+实际是**测量工具错**。同时 mask 无条件按 causal 生成，`causal=0` 时与 golden 口径不一致。
+
+**在 kernel 通过之前，先独立验证 benchmark（让 golden 与 numpy/torch 对一遍）。**
 
 ---
 
