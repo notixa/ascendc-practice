@@ -292,6 +292,42 @@ int main(int argc, char** argv)
     printf("max_err = %.6f   (at %zu: got %.4f expect %.4f)\n", maxErr, badIdx,
            static_cast<double>(F16ToF32Exact(ho[badIdx])), static_cast<double>(F16ToF32Exact(hgold[badIdx])));
 
+    // ---- 两 stack 分解的期望值：验证 oTmp(stack0)/oTmp(stack1)/gl 哪个错 ----
+    if (o.causal == 0 && N == 768 && H == 1) {
+        const size_t split = 512;              // STACK_NUM*B_k：段1 第一次调用覆盖 keys 0..511
+        auto dotp = [&](size_t t) {
+            double a = 0.0;
+            for (uint32_t d = 0; d < D; ++d) {
+                a += static_cast<double>(F16ToF32Exact(hq[d])) *
+                     static_cast<double>(F16ToF32Exact(hk[t * D + d]));
+            }
+            return a / std::sqrt(static_cast<double>(D));
+        };
+        double m0 = -1e30, m1 = -1e30;
+        for (size_t t = 0; t < split; ++t) m0 = std::max(m0, dotp(t));
+        for (size_t t = split; t < N; ++t) m1 = std::max(m1, dotp(t));
+        double gl0 = 0.0, gl1 = 0.0, ot0 = 0.0, ot1 = 0.0;
+        for (size_t t = 0; t < split; ++t) {
+            const double e = std::exp(dotp(t) - m0);
+            gl0 += e;
+            ot0 += e * static_cast<double>(F16ToF32Exact(hv[t * D + 0]));
+        }
+        for (size_t t = split; t < N; ++t) {
+            const double e = std::exp(dotp(t) - m1);
+            gl1 += e;
+            ot1 += e * static_cast<double>(F16ToF32Exact(hv[t * D + 0]));
+        }
+        const double M = std::max(m0, m1);
+        const double w0 = std::exp(m0 - M), w1 = std::exp(m1 - M);
+        const double glT = gl0 * w0 + gl1 * w1;
+        const double goT = ot0 * w0 + ot1 * w1;
+        printf("EXPECT: oTmp0[0]=%.6f (E6 应等于它)  gl0=%.6f\n", ot0, gl0);
+        printf("EXPECT: oTmp1[0]=%.6f (E7 应等于它)  gl1=%.6f\n", ot1, gl1);
+        printf("EXPECT: m0=%.6f m1=%.6f  dm=%.6f  gl_total=%.6f  go_total=%.6f  O[0]=%.6f\n",
+               m0, m1, w0, glT, goT, goT / glT);
+        printf("GOLDEN: O[0][0]=%.6f\n", static_cast<double>(F16ToF32Exact(hgold[0])));
+    }
+
     // ---- 每个 q 块第一行的 O vs golden（配合设备侧 go/gl 打点算"应该是多少"）----
     {
         const size_t rowElems = static_cast<size_t>(H) * D;
