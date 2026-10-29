@@ -150,6 +150,9 @@ public:
                 loUbTensor, gInput, AscendC::DataCopyParams(1, curRowNum * embedRound / FLOAT_BLOCK_SIZE, 0, 0));
             AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
             AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
+            // 诊断：入口处 go 应该是【上一个 stack 累积的 O】，lo 是【本 stack 的 oTmp】
+            FAT_UB_DUMP("E6 go-in0 go-in8", goUbTensor32, 0, 8);
+            FAT_UB_DUMP("E7 lo0 lo8", loUbTensor, 0, 8);
 
             AscendC::SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
             AscendC::Brcb(
