@@ -91,7 +91,11 @@ uint64_t GetHardwareSyncAddrOrThrow()
 
 namespace catlass_torch {
 
-// ---------------- 1. 基础校验 ----------------
+at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
+               const at::Tensor& mask, double scale, int64_t batch, int64_t blockDim,
+               int64_t stream_handle)
+{
+    // ---------------- 1. 基础校验 ----------------
     TORCH_CHECK(q.device().type() == c10::DeviceType::PrivateUse1, "q must be on NPU");
     TORCH_CHECK(k.device().type() == c10::DeviceType::PrivateUse1, "k must be on NPU");
     TORCH_CHECK(v.device().type() == c10::DeviceType::PrivateUse1, "v must be on NPU");

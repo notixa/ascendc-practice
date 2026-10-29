@@ -25,11 +25,10 @@ option(FAT_ENABLE_PRINT "Enable device-side AscendC::PRINTF" OFF)
 # 用来区分「kernel 内部死锁」和「OpCommand 等错了流」。
 option(FAT_NO_OPCOMMAND "Bypass torch_npu OpCommand (debug stream deadlock)" OFF)
 
-# 调试用：去掉 AIV 侧的两个跨核 wait（让 AIV 不再等 AIC）
-# 目的是判断「AIV 到底有没有被调度」：
-#   - 开了它，kernel 能跑完且 O 非 0  → AIV 跑过 ⇒ 之前是跨核 flag 收不到
-#   - 开了它，仍然卡死 / O 全 0      → AIV 根本没被调度
-
+# ★★ 必须定义 CATLASS_ARCH：CATLASS 全仓 137 处 `#if CATLASS_ARCH == 2201` 条件编译，
+#    不定义它 → TileCopy/BlockMmad 的 A2 特化根本不参与解析，
+#    表现就是 copy_gm_to_l1.hpp 里 `CopyGmToL1` 找不到、tile_copy.hpp 一堆 no template named ...
+add_compile_definitions(CATLASS_ARCH=${NPU_ARCH})
 add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-${NPU_ARCH}>)
 add_compile_options(
   $<$<COMPILE_LANGUAGE:ASC>:-Wno-macro-redefined>
