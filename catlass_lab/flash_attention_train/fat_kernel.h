@@ -261,10 +261,14 @@ public:
         LayoutOTmp layoutOTmp{B_q, headDim};
         LayoutMask layoutMask{B_q, B_k, B_k};
 
-        uint32_t spOffset = GetBlockIdx() * B_q * B_k * STACK_NUM;
-        uint32_t oTmpOffset = GetBlockIdx() * B_q * headDim;
+        // ★★ AIV 侧：两个 subcore（2k、2k+1）同属 AIC k，必须除以 GetSubBlockNum()。
+        //    直接拿 GetBlockIdx() 当 task 索引会让 numTask < 2*coreNum 时 subcore 1 完全不跑，
+        //    而 AIC 的跨核 wait 需要两个 subcore 都置位 → 死锁。
+        const uint32_t coreIdx = AscendC::GetBlockIdx() / AscendC::GetSubBlockNum();
+        uint32_t spOffset = coreIdx * B_q * B_k * STACK_NUM;
+        uint32_t oTmpOffset = coreIdx * B_q * headDim;
 
-        for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < t->numTask; taskIdx += AscendC::GetBlockNum()) {
+        for (uint32_t taskIdx = coreIdx; taskIdx < t->numTask; taskIdx += AscendC::GetBlockNum()) {
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk);
             uint32_t oOffset =
                 taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
