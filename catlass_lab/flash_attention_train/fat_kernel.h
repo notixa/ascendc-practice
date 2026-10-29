@@ -19,8 +19,12 @@
 #if defined(FAT_TRACE)
 // 极简：单字符 + 不换行，避免把设备端 print buffer 打满
 // 必须带 \n：device 侧 PRINTF 没有换行不会 flush
-#define FATT(msg) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF(msg "\n"); } } while (0)
-#define FATT1(msg, a) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF(msg "\n"); } } while (0)
+// 打印 [blockIdx/blockNum] 以确认 AIC 与 AIV 的配对关系；不加 ==0 过滤，所有核都打
+#define FATT(msg)                                                                                  \
+    do {                                                                                           \
+        AscendC::PRINTF("[%d/%d] " msg "\n", (int)AscendC::GetBlockIdx(), (int)AscendC::GetBlockNum()); \
+    } while (0)
+#define FATT1(msg, a) FATT(msg)
 #else
 #define FATT(msg) do { } while (0)
 #define FATT1(msg, a) do { } while (0)
@@ -99,6 +103,7 @@ public:
         BlockMmadPV_ mmadPV(resource, L1_QK_SIZE);
         BlockMmadQKTail_ mmadQKTail(resource);
         BlockMmadPVTail_ mmadPVTail(resource, L1_QK_SIZE);
+        FATT("AIC enter");
 
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
         uint32_t headNum = t->head_num;
@@ -237,6 +242,7 @@ public:
 
         BlockEpilogueOnlineSoftmax_ onlineSoftmax(resource, scaleValue);
         BlockEpilogueRescaleO_ rescaleO(resource);
+        FATT("AIV enter");
 
         GlobalTensor<ElementS> sGm;
         GlobalTensor<ElementP> pGm;
