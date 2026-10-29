@@ -29,13 +29,6 @@ option(FAT_NO_OPCOMMAND "Bypass torch_npu OpCommand (debug stream deadlock)" OFF
 #    不定义它 → TileCopy/BlockMmad 的 A2 特化根本不参与解析，
 #    表现就是 copy_gm_to_l1.hpp 里 `CopyGmToL1` 找不到、tile_copy.hpp 一堆 no template named ...
 add_compile_definitions(CATLASS_ARCH=${NPU_ARCH})
-
-# 临时诊断开关：设备侧打点（AscendC::PRINTF）。默认关，定完位就删。
-option(FAT_TRACE "Enable device-side trace prints" OFF)
-if(FAT_TRACE)
-  message(STATUS "device trace: ON")
-  add_compile_definitions(FAT_TRACE=1)
-endif()
 add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-${NPU_ARCH}>)
 add_compile_options(
   $<$<COMPILE_LANGUAGE:ASC>:-Wno-macro-redefined>

@@ -15,24 +15,6 @@
 #include "fat_tiling.h"
 #include "fat_params.h" // FATParams（设备侧：含 GM_ADDR），host 侧不要引
 #include "kernel_operator.h"
-// ── 临时诊断：-DFAT_TRACE 才生效，定完位就删 ──
-#if defined(FAT_TRACE)
-// 极简：单字符 + 不换行，避免把设备端 print buffer 打满
-// 必须带 \n：device 侧 PRINTF 没有换行不会 flush
-// 打印 [blockIdx/blockNum] 以确认 AIC 与 AIV 的配对关系；不加 ==0 过滤，所有核都打
-#define FATT(msg)                                                                                       \
-    do {                                                                                                \
-        AscendC::PRINTF("[%d/%d] " msg "\n", (int)AscendC::GetBlockIdx(), (int)AscendC::GetBlockNum()); \
-    } while (0)
-#define FATT1(msg, a) FATT(msg)
-#else
-#define FATT(msg) \
-    do {          \
-    } while (0)
-#define FATT1(msg, a) \
-    do {              \
-    } while (0)
-#endif
 
 #include "kernel_operator_common_intf_impl.h"
 using namespace Catlass;
@@ -107,7 +89,6 @@ public:
         BlockMmadPV_ mmadPV(resource, L1_QK_SIZE);
         BlockMmadQKTail_ mmadQKTail(resource);
         BlockMmadPVTail_ mmadPVTail(resource, L1_QK_SIZE);
-        FATT("AIC enter");
 
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
         uint32_t headNum = t->head_num;
@@ -184,7 +165,6 @@ public:
                     actualShapeQK, maskedIdx, taskInfo.visibleKBlockNum, B_k, taskInfo.visibleEnd, headNum * headDim,
                     taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 K 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
-                FATT("Q");
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPVTail(
@@ -192,7 +172,6 @@ public:
                     maskedIdx, taskInfo.visibleKBlockNum, B_k, taskInfo.visibleEnd, headNum * headDim, smReady,
                     taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 V 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
-                FATT("P");
             }
         }
         AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(EVENT_ID0);
@@ -248,7 +227,6 @@ public:
 
         BlockEpilogueOnlineSoftmax_ onlineSoftmax(resource, scaleValue);
         BlockEpilogueRescaleO_ rescaleO(resource);
-        FATT("AIV enter");
 
         GlobalTensor<ElementS> sGm;
         GlobalTensor<ElementP> pGm;
@@ -310,17 +288,13 @@ public:
                 onlineSoftmax(
                     pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
                     (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
-                FATT("s"); // softmax 返回
 
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
-                FATT("m"); // smReady 已置
                 Arch::CrossCoreWaitFlag(pvReady);
-                FATT("v"); // 等到 pvReady
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
                     (stackIdx == 0) ? 1u : 0u, (stackIdx == taskInfo.totalStackNum - 1) ? 1u : 0u, 0u);
-                FATT("r"); // rescale 完成
             }
         }
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2);
