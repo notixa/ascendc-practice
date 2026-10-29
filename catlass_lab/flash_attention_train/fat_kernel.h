@@ -17,8 +17,9 @@
 #include "kernel_operator.h"
 // ── 临时诊断：-DFAT_TRACE 才生效，定完位就删 ──
 #if defined(FAT_TRACE)
-#define FATT(msg) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[FAT] " msg "\n"); } } while (0)
-#define FATT1(msg, a) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF("[FAT] " msg " %d\n", (int)(a)); } } while (0)
+// 极简：单字符 + 不换行，避免把设备端 print buffer 打满
+#define FATT(msg) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF(msg); } } while (0)
+#define FATT1(msg, a) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF(msg); } } while (0)
 #else
 #define FATT(msg) do { } while (0)
 #define FATT1(msg, a) do { } while (0)
@@ -97,7 +98,6 @@ public:
         BlockMmadPV_ mmadPV(resource, L1_QK_SIZE);
         BlockMmadQKTail_ mmadQKTail(resource);
         BlockMmadPVTail_ mmadPVTail(resource, L1_QK_SIZE);
-        FATT("AIC: blocks ctor ok");
 
         __gm__ FATTiling* t = reinterpret_cast<__gm__ FATTiling*>(params.tiling);
         uint32_t headNum = t->head_num;
@@ -141,7 +141,6 @@ public:
 
             uint32_t singleGroupHeads = 1;
             mmadQK.loadQGM(qGm[taskInfo.qOffset], layoutQ, taskInfo.qRowNum, singleGroupHeads, headNum);
-            FATT1("AIC: loadQGM ok, nLoop=", taskInfo.nLoop);
             for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM) {
                 uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.visibleEnd - nIdx * B_k) ?
                                        B_k * STACK_NUM :
@@ -154,14 +153,12 @@ public:
                     qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
                     actualShapeQK, nIdx, taskInfo.nLoop, B_q, taskInfo.noMaskEnd, headNum * headDim);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
-                FATT("AIC: QK done, qk set");
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPV(
                     pGm[spOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
                     nIdx, taskInfo.nLoop, B_q, taskInfo.noMaskEnd, headNum * headDim, smReady);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
-                FATT("AIC: PV done, pv set");
             }
             for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum; maskedIdx += STACK_NUM) {
                 uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdx * B_k) ?
@@ -176,7 +173,7 @@ public:
                     actualShapeQK, maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim,
                     taskInfo.maskTailS, true);   // ★ preloadFlag：首块必须 true，否则 K 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
-                FATT("AIC: QKTail done, qk set");
+                FATT("Q");
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPVTail(
@@ -184,6 +181,7 @@ public:
                     maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim, smReady,
                     taskInfo.maskTailS, true);   // ★ preloadFlag：首块必须 true，否则 V 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
+                FATT("P");
             }
         }
         AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(EVENT_ID0);
@@ -238,7 +236,6 @@ public:
 
         BlockEpilogueOnlineSoftmax_ onlineSoftmax(resource, scaleValue);
         BlockEpilogueRescaleO_ rescaleO(resource);
-        FATT("AIV: blocks ctor ok");
 
         GlobalTensor<ElementS> sGm;
         GlobalTensor<ElementP> pGm;
@@ -264,7 +261,6 @@ public:
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk);
             uint32_t oOffset =
                 taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
-            FATT1("AIV: enter seg1, nLoop=", taskInfo.nLoop);
             for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM) {
                 uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.noMaskEnd - nIdx * B_k) ?
                                        B_k * STACK_NUM :
@@ -273,22 +269,17 @@ public:
                 GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, headDim};
 
                 Arch::CrossCoreWaitFlag(qkReady);
-                FATT("AIV: got qk (nodiag)");
                 onlineSoftmax(
                     pGm[spOffset], sGm[spOffset], layoutP, layoutS, onlineSoftmaxShape, (nIdx == 0) ? 1u : 0u,
                     taskInfo.qRowNum, 1u, 0u);
 
-                FATT("AIV: about to set sm (MTE3 sync, waits for MTE3 drain)");
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
-                FATT("AIV: sm set");
                 Arch::CrossCoreWaitFlag(pvReady);
-                FATT("AIV: got pv");
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
                     (nIdx == 0) ? 1u : 0u, false, 0u);
             }
-            FATT1("AIV: enter seg2, visibleKBlk=", taskInfo.visibleKBlockNum);
             for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum; maskedIdx += STACK_NUM) {
                 uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.visibleEnd - maskedIdx * B_k) ?
                                        B_k * STACK_NUM :
@@ -296,21 +287,20 @@ public:
 
                 GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, headDim};
 
-                FATT1("AIV: seg2 before masked softmax, kRowNum=", kRowNum);
                 onlineSoftmax(
                     pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
                     (maskedIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
-                FATT("AIV: seg2 masked softmax returned");                onlineSoftmax(
-                    pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
-                    (maskedIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
+                FATT("s");                                   // softmax 返回
 
-                FATT("AIV: about to set sm (MTE3 sync, waits for MTE3 drain)");
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
+                FATT("m");                                   // smReady 已置
                 Arch::CrossCoreWaitFlag(pvReady);
+                FATT("v");                                   // 等到 pvReady
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
                     (maskedIdx == 0) ? 1u : 0u, maskedIdx + STACK_NUM >= taskInfo.visibleKBlockNum, 0u);
+                FATT("r");                                   // rescale 完成
             }
         }
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2);
