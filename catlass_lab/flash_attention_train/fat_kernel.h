@@ -161,14 +161,14 @@ public:
                 mmadQKTail(
                     qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
                     actualShapeQK, maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim,
-                    taskInfo.maskTailS, false);
+                    taskInfo.maskTailS, true);   // ★ preloadFlag：首块必须 true，否则 K 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPVTail(
                     pGm[spOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
                     maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim, smReady,
-                    taskInfo.maskTailS, false);
+                    taskInfo.maskTailS, true);   // ★ preloadFlag：首块必须 true，否则 V 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
             }
         }
