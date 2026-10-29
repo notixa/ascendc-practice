@@ -266,6 +266,37 @@ int main(int argc, char** argv)
     printf("max_err = %.6f   (at %zu: got %.4f expect %.4f)\n", maxErr, badIdx,
            static_cast<double>(F16ToF32Exact(ho[badIdx])), static_cast<double>(F16ToF32Exact(hgold[badIdx])));
 
+    // ---------------- 数值定位 dump：把 S / P / O 的第一行打出来 ----------------
+    {
+        std::vector<float> hS(8, -12345.f);
+        std::vector<uint16_t> hP(8, 0xFC00);   // -inf 占位
+        ACL_OK(aclrtMemcpy(hS.data(), 8 * sizeof(float), pS, 8 * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
+        ACL_OK(aclrtMemcpy(hP.data(), 8 * 2, pP, 8 * 2, ACL_MEMCPY_DEVICE_TO_HOST));
+        printf("S[0][0..7] =");
+        for (int i = 0; i < 8; ++i) printf(" %.4f", hS[i]);
+        printf("\n");
+        printf("P[0][0..7] =");
+        for (int i = 0; i < 8; ++i) printf(" %.6f", (double)F16ToF32Exact(hP[i]));
+        printf("\n");
+
+        // golden 的 S 第一行（未 softmax，带 scale）
+        printf("Sgold[0][0..7] =");
+        for (int j = 0; j < 8; ++j) {
+            double acc = 0;
+            for (int d = 0; d < D; ++d)
+                acc += (double)F16ToF32Exact(hq[0 * H * D + 0 * D + d]) *
+                       (double)F16ToF32Exact(hk[j * H * D + 0 * D + d]);
+            printf(" %.4f", acc / std::sqrt(static_cast<double>(D)));
+        }
+        printf("\n");
+        printf("O[0][0..7]  =");
+        for (int d = 0; d < 8; ++d) printf(" %.4f", (double)F16ToF32Exact(ho[0 * H * D + d]));
+        printf("\n");
+        printf("Ogold[0][0..7]=");
+        for (int d = 0; d < 8; ++d) printf(" %.4f", (double)F16ToF32Exact(hgold[0 * H * D + d]));
+        printf("\n");
+    }
+
     aclrtFree(qDev); aclrtFree(kDev); aclrtFree(vDev); aclrtFree(oDev);
     aclrtFree(maskDev); aclrtFree(tilingDev); aclrtFree(wsDev);
     aclrtDestroyStream(stream);
