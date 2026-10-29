@@ -295,7 +295,8 @@ public:
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
-                    (nIdx == 0) ? 1u : 0u, false, 0u);
+                    (nIdx == 0) ? 1u : 0u,
+                    (nIdx + STACK_NUM >= taskInfo.nLoop) && (taskInfo.nLoop >= taskInfo.visibleKBlockNum), 0u);
             }
             for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum; maskedIdx += STACK_NUM) {
                 uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.visibleEnd - maskedIdx * B_k) ?
