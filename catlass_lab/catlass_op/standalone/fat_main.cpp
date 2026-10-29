@@ -80,6 +80,8 @@ float F16ToF32Exact(uint16_t h)
     return sign * f;
 }
 
+static bool gBrokenMask = false;
+
 struct Options {
     uint32_t n = 128;
     uint32_t h = 1;
@@ -104,9 +106,10 @@ void Golden(const Options& o,
         // s[p][t] = sum_d q[p][h][d] * k[t][h][d] * scale
         for (uint32_t p = 0; p < N; ++p) {
             for (uint32_t t = 0; t < N; ++t) {
-                if (o.causal && t > p) {
-                    s[static_cast<size_t>(p) * N + t] = -1e30;
-                    continue;
+                if (o.causal) {
+                    const uint32_t r = static_cast<uint32_t>(p % 128);
+                    const uint32_t pat = gBrokenMask ? (r % 64) : r;
+                    if (t > pat) { s[static_cast<size_t>(p) * N + t] = -1e30; continue; }
                 }
                 double acc = 0.0;
                 for (uint32_t dd = 0; dd < D; ++dd) {
@@ -147,11 +150,14 @@ int main(int argc, char** argv)
     if (argc > 1) o.n = static_cast<uint32_t>(atoi(argv[1]));
     if (argc > 2) o.h = static_cast<uint32_t>(atoi(argv[2]));
     if (argc > 3) o.causal = atoi(argv[3]);
+    int brokenMask = 0;
+    if (argc > 4) brokenMask = atoi(argv[4]);   // 1 = 把 mask 的 64..127 行改成 0..63 行（验证用）
     if (argc > 4) o.blockDim = static_cast<uint32_t>(atoi(argv[4]));
     const uint32_t B_q = 128, B_k = 128;
     const uint32_t B = o.batch, N = o.n, H = o.h, D = o.d;
 
-    printf("=== fat_bench  N=%u H=%u D=%u B=%u causal=%d ===\n", N, H, D, B, o.causal);
+    gBrokenMask = (brokenMask != 0);
+    printf("=== fat_bench  N=%u H=%u D=%u B=%u causal=%d brokenMask=%d ===\n", N, H, D, B, o.causal, brokenMask);
 
     // ---------------- ACL 初始化（严格照 examples/23 的顺序） ----------------
     ACL_OK(aclInit(nullptr));
@@ -178,8 +184,9 @@ int main(int argc, char** argv)
     std::vector<uint16_t> hmask(128 * 128, 0);
     if (o.causal) {
         for (uint32_t i = 0; i < 128; ++i) {
+            const uint32_t pat = brokenMask ? (i % 64) : i;   // 验证：假设 sb1 读到的是 mask 0..63 行
             for (uint32_t j = 0; j < 128; ++j) {
-                hmask[i * 128 + j] = (j > i) ? 0x3C00 /* 1.0 */ : 0x0000;
+                hmask[i * 128 + j] = (j > pat) ? 0x3C00 /* 1.0 */ : 0x0000;
             }
         }
     }
