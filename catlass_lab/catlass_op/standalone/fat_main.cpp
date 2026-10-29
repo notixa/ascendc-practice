@@ -290,6 +290,25 @@ int main(int argc, char** argv)
                 }
             }
             printf("  i=%zu: %.6f", b, be);
+
+            // 每个 subblock（0..63 / 64..127）分别统计 + 坏行范围
+            for (int sb = 0; sb < 2; ++sb) {
+                double sbe = 0.0;
+                size_t nBad = 0, firstBad = 0, lastBad = 0;
+                const size_t r0 = p0 + sb * 64, r1 = std::min<size_t>(p0 + (sb + 1) * 64, p1);
+                for (size_t p = r0; p < r1; ++p) {
+                    double re = 0.0;
+                    for (size_t d = 0; d < rowElems; ++d) {
+                        const size_t i = p * rowElems + d;
+                        const double e = std::fabs(static_cast<double>(F16ToF32Exact(ho[i])) -
+                                                   static_cast<double>(F16ToF32Exact(hgold[i])));
+                        if (e > re) re = e;
+                    }
+                    if (re > sbe) sbe = re;
+                    if (re > 0.01) { if (!nBad) firstBad = p - p0; lastBad = p - p0; ++nBad; }
+                }
+                printf("   [sb%d: %.6f nbad=%zu rows %zu..%zu]", sb, sbe, nBad, firstBad, lastBad);
+            }
         }
         printf("\n");
     }
