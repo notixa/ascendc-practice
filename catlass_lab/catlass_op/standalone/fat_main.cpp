@@ -42,28 +42,30 @@ namespace {
 // 为了简单：数据全部取 { -2, -1, 0, 1, 2 } * 0.25，这些数在 fp16 里是精确的。
 uint16_t F32ToF16Exact(float v)
 {
-    // 只处理 |v| <= 8 且是 1/4 的整数倍：用 fp16 的 bit 布局直接构造太绕，这里用查表
-    // 分母固定为 1/4，所以 v*4 一定是小整数
-    const int k = static_cast<int>(lroundf(v * 4.0f)); // -8..8
-    const int sign = (k < 0) ? 0x8000 : 0x0000;
-    int a = (k < 0) ? -k : k;
-    // 值 = a/4。fp16: 指数 15 表示 [1,2)，这里直接用精确表示：
-    //   a=0 → 0
-    //   1/4 → exp=13, mant=0 ; 0.5 → exp=14 ; 1 → 15 ; 2 → 16 ; 4 → 17 ; 8 → 18
-    //   a=1,2,3 → 0.25,0.5,0.75 等，需要 mant 位
-    static const uint16_t TAB[33] = {
-        0x0000, // 0
-        0x3400, 0x3800, 0x3C00, // 0.25 0.5 0.75
-        0x4000, 0x4400, 0x4800, 0x4C00, // 1 1.25 1.5 1.75
-        0x5000, 0x5200, 0x5400, 0x5600, 0x5800, 0x5A00, 0x5C00, 0x5E00, // 2..3.75
-        0x6000, 0x6100, 0x6200, 0x6300, 0x6400, 0x6500, 0x6600, 0x6700,
-        0x6800, 0x6900, 0x6A00, 0x6B00, 0x6C00, 0x6D00, 0x6E00, 0x6F00, // 4..7.75
-        0x7000,
-    };
-    if (a > 32) {
-        a = 32;
+    // 标准 fp32 -> fp16（只覆盖规格数，足够本 bench 用：|v| 在 [1e-4, 100]）
+    // 之前那张查表把 1.25 编成了 4.0、2.0 编成了 32.0，导致实际数据比预期大 16 倍。
+    uint32_t x;
+    std::memcpy(&x, &v, sizeof(x));
+    const uint16_t sign = static_cast<uint16_t>((x >> 16) & 0x8000u);
+    const uint32_t exp32 = (x >> 23) & 0xFFu;
+    const uint32_t mant32 = x & 0x7FFFFFu;
+    if (exp32 == 0) {
+        return sign;                                  // 0 / 次正规 → 0
     }
-    return static_cast<uint16_t>(sign | TAB[a]);
+    int he = static_cast<int>(exp32) - 127 + 15;
+    if (he >= 31) {
+        return static_cast<uint16_t>(sign | 0x7C00u);  // inf
+    }
+    if (he <= 0) {
+        return sign;                                  // 太小 → 0（本 bench 不会走到）
+    }
+    uint16_t mant16 = static_cast<uint16_t>(mant32 >> 13);
+    // 就近舍入（round-half-up 到 fp16）
+    if ((mant32 & 0x1FFFu) > 0x1000u) {
+        mant16 = static_cast<uint16_t>(mant16 + 1u);
+        if (mant16 == 0x400u) { mant16 = 0; if (++he >= 31) return static_cast<uint16_t>(sign | 0x7C00u); }
+    }
+    return static_cast<uint16_t>(sign | (static_cast<uint16_t>(he) << 10) | mant16);
 }
 
 float F16ToF32Exact(uint16_t h)
@@ -170,11 +172,15 @@ int main(int argc, char** argv)
         hk[i] = F32ToF16Exact(dist(rng) * 0.25f);
         hv[i] = F32ToF16Exact(dist(rng) * 0.25f);
     }
-    // mask：[128,128] fp16，1 = 屏蔽，triu(diagonal=1)
+    // mask：[128,128] fp16，1 = 屏蔽。
+    // ★ 必须跟 causal 开关一致：之前无条件造 causal mask，导致 causal=0 时
+    //   golden 算全注意力、kernel 却按 causal 算，两边永远对不上。
     std::vector<uint16_t> hmask(128 * 128, 0);
-    for (uint32_t i = 0; i < 128; ++i) {
-        for (uint32_t j = 0; j < 128; ++j) {
-            hmask[i * 128 + j] = (j > i) ? 0x3C00 /* 1.0 */ : 0x0000;
+    if (o.causal) {
+        for (uint32_t i = 0; i < 128; ++i) {
+            for (uint32_t j = 0; j < 128; ++j) {
+                hmask[i * 128 + j] = (j > i) ? 0x3C00 /* 1.0 */ : 0x0000;
+            }
         }
     }
 
