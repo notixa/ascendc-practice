@@ -35,6 +35,16 @@
 #define FAT_UB_DUMP(tag, t, i0, i1) do { } while (0)
 #endif
 
+#if defined(FAT_TRACE)
+#define FAT_INT_DUMP(tag, a, b)                                                           \
+    do {                                                                                  \
+        AscendC::PRINTF("[%d] " tag " %d %d\n", (int)AscendC::GetBlockIdx(), (int)(a),   \
+                        (int)(b));                                                        \
+    } while (0)
+#else
+#define FAT_INT_DUMP(tag, a, b) do { } while (0)
+#endif
+
 namespace Catlass::Epilogue::Block {
 
 template <class OutputType_, class InputType_, class MaskType_>
@@ -696,6 +706,12 @@ public:
                 auto gOutputCurLoop = gOutput[offsetOutput];
                 auto layoutOutputCurLoop = layoutOutput.GetTileLayout(MatrixCoord(rowNumCurLoop, columnNum));
                 AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(pingpongFlag);
+                // ★ 诊断：epilogue 收到的 S（未 scale）应与 GM 里的 S 完全一致；
+                //   columnNum 应为本 stack 的真实列数（N=768 的 stack1 应为 256）
+                FAT_INT_DUMP("E9 colNum rowNumCurLoop", columnNum, rowNumCurLoop);
+                FAT_INT_DUMP("E9 colNumPad rowOffsetIoGm", columnNumPad, rowOffsetIoGm);
+                FAT_UB_DUMP("E8 ls0 ls1(未scale)", lsUbTensor, 0, 1);
+                FAT_UB_DUMP("E8 ls8 ls9", lsUbTensor, 8, 9);
                 ScaleS((pingpongFlag * MAX_UB_S_ELEM_NUM), rowNumCurLoop, columnNumRound);
                 SubCoreCompute<MaskCategory::NO_MASK>(
                     gOutputCurLoop, layoutOutputCurLoop, rowOffsetCurLoop, isFirstStackTile, columnNumRound,
