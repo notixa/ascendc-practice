@@ -20,14 +20,18 @@
 // 极简：单字符 + 不换行，避免把设备端 print buffer 打满
 // 必须带 \n：device 侧 PRINTF 没有换行不会 flush
 // 打印 [blockIdx/blockNum] 以确认 AIC 与 AIV 的配对关系；不加 ==0 过滤，所有核都打
-#define FATT(msg)                                                                                  \
-    do {                                                                                           \
+#define FATT(msg)                                                                                       \
+    do {                                                                                                \
         AscendC::PRINTF("[%d/%d] " msg "\n", (int)AscendC::GetBlockIdx(), (int)AscendC::GetBlockNum()); \
     } while (0)
 #define FATT1(msg, a) FATT(msg)
 #else
-#define FATT(msg) do { } while (0)
-#define FATT1(msg, a) do { } while (0)
+#define FATT(msg) \
+    do {          \
+    } while (0)
+#define FATT1(msg, a) \
+    do {              \
+    } while (0)
 #endif
 
 #include "kernel_operator_common_intf_impl.h"
@@ -114,6 +118,7 @@ public:
         uint32_t N_k = t->N_k;
         uint32_t numTask = t->numTask;
         uint32_t batchNum = t->batch_num;
+        uint32_t causal = t->causal;
 
         uint32_t delta_qk = N_k - N_q;
 
@@ -143,7 +148,7 @@ public:
         uint32_t oTmpOffset = GetBlockIdx() * B_q * headDim;
 
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += AscendC::GetBlockNum()) {
-            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk);
+            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk, causal);
 
             uint32_t singleGroupHeads = 1;
             mmadQK.loadQGM(qGm[taskInfo.qOffset], layoutQ, taskInfo.qRowNum, singleGroupHeads, headNum);
@@ -177,7 +182,7 @@ public:
                 mmadQKTail(
                     qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
                     actualShapeQK, maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim,
-                    taskInfo.maskTailS, true);   // ★ preloadFlag：首块必须 true，否则 K 不预搬 → 死等
+                    taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 K 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
                 FATT("Q");
 
@@ -185,7 +190,7 @@ public:
                 mmadPVTail(
                     pGm[spOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
                     maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim, smReady,
-                    taskInfo.maskTailS, true);   // ★ preloadFlag：首块必须 true，否则 V 不预搬 → 死等
+                    taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 V 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
                 FATT("P");
             }
@@ -237,6 +242,7 @@ public:
         uint32_t headNum = t->head_num;
         uint32_t headDim = t->head_dim;
         uint32_t batchNum = t->batch_num;
+        uint32_t causal = t->causal;
 
         uint32_t delta_qk = N_k - N_q;
 
@@ -269,7 +275,7 @@ public:
         uint32_t oTmpOffset = coreIdx * B_q * headDim;
 
         for (uint32_t taskIdx = coreIdx; taskIdx < t->numTask; taskIdx += AscendC::GetBlockNum()) {
-            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk);
+            TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk, causal);
             uint32_t oOffset =
                 taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
             for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM) {
@@ -301,17 +307,17 @@ public:
                 onlineSoftmax(
                     pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
                     (maskedIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
-                FATT("s");                                   // softmax 返回
+                FATT("s"); // softmax 返回
 
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
-                FATT("m");                                   // smReady 已置
+                FATT("m"); // smReady 已置
                 Arch::CrossCoreWaitFlag(pvReady);
-                FATT("v");                                   // 等到 pvReady
+                FATT("v"); // 等到 pvReady
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
                     (maskedIdx == 0) ? 1u : 0u, maskedIdx + STACK_NUM >= taskInfo.visibleKBlockNum, 0u);
-                FATT("r");                                   // rescale 完成
+                FATT("r"); // rescale 完成
             }
         }
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2);
@@ -349,7 +355,7 @@ private:
 private:
     TaskInfo DecodeTask(
         uint32_t taskIdx, uint32_t N_q, uint32_t N_k, uint32_t B_q, uint32_t B_k, uint32_t headNum, uint32_t headDim,
-        uint32_t delta_qk)
+        uint32_t delta_qk, uint32_t causal)
     {
         TaskInfo info;
         uint32_t blocksPerBatch = (N_q + B_q - 1) / B_q;
@@ -358,8 +364,8 @@ private:
         info.h = (taskIdx % (blocksPerBatch * headNum)) % headNum;
         info.qRowNum = (B_q < N_q - info.i * B_q) ? B_q : N_q - info.i * B_q;
         info.qOffset = info.b * N_q * headNum * headDim + info.i * B_q * headDim * headNum + info.h * headDim;
-        info.visibleEnd = info.i * B_q + info.qRowNum + delta_qk;
-        info.noMaskEnd = info.visibleEnd - B_q;
+        info.visibleEnd = causal ? (info.i * B_q + info.qRowNum + delta_qk) : N_k;
+        info.noMaskEnd = causal ? (info.visibleEnd - B_q) : N_k;
         info.maskTailS = info.noMaskEnd % B_k;
         info.nLoop = (info.noMaskEnd + B_k - 1) / B_k;
         info.visibleKBlockNum = (info.visibleEnd + B_k - 1) / B_k;

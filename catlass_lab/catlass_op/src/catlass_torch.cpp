@@ -180,6 +180,9 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     hostTiling.batch_num = static_cast<uint32_t>(batch);
     hostTiling.numTask   = static_cast<uint32_t>(numTask);
     hostTiling.scale     = static_cast<float>(scale);
+    // torch 路径暂时只支持 causal（mask 是必传参数，语义即 causal）。
+    // 要支持全注意力，需要给 op 增加一个 causal 参数并从 Python 透传。
+    hostTiling.causal    = 1u;
 
     // FATTiling 是 POD：用 from_blob 借 host 内存 → to(device) 走 torch 的 H2D 拷贝
     auto tilingDev = at::from_blob(&hostTiling, {static_cast<int64_t>(sizeof(FATTiling))},

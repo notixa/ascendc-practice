@@ -12,15 +12,16 @@
 #include <cstddef>
 
 struct FATTiling {
-    uint32_t N_q;        // 每个 batch 的 q 序列长度（局部行数）
-    uint32_t N_k;        // 每个 batch 的 kv 序列长度
-    uint32_t B_q;        // q 分块大小（须与 fat_types.h 的 L1TileShapeQK::M 一致）
-    uint32_t B_k;        // kv 分块大小（须与 L1TileShapeQK::N 一致）
+    uint32_t N_q; // 每个 batch 的 q 序列长度（局部行数）
+    uint32_t N_k; // 每个 batch 的 kv 序列长度
+    uint32_t B_q; // q 分块大小（须与 fat_types.h 的 L1TileShapeQK::M 一致）
+    uint32_t B_k; // kv 分块大小（须与 L1TileShapeQK::N 一致）
     uint32_t head_num;
-    uint32_t head_dim;   // 本 kernel 要求 128
+    uint32_t head_dim; // 本 kernel 要求 128
     uint32_t batch_num;
-    uint32_t numTask;    // batch_num * ceil(N_q/B_q) * head_num
-    float    scale;      // 1/sqrt(head_dim)
+    uint32_t numTask; // batch_num * ceil(N_q/B_q) * head_num
+    float scale;      // 1/sqrt(head_dim)
+    uint32_t causal;
 };
 
 // ---------------------------------------------------------------------------
@@ -58,7 +59,7 @@ inline size_t BytesS(uint32_t coreNum, uint32_t B_q, uint32_t B_k)
 }
 inline size_t BytesP(uint32_t coreNum, uint32_t B_q, uint32_t B_k)
 {
-    return ElemsP(coreNum, B_q, B_k) * 2;   // fp16：不写 sizeof(half)，避免引入设备类型
+    return ElemsP(coreNum, B_q, B_k) * 2; // fp16：不写 sizeof(half)，避免引入设备类型
 }
 inline size_t BytesOt(uint32_t coreNum, uint32_t B_q, uint32_t headDim)
 {

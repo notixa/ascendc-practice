@@ -221,6 +221,7 @@ int main(int argc, char** argv)
     tiling.batch_num = B;
     tiling.numTask = numTask;
     tiling.scale = static_cast<float>(1.0 / std::sqrt(static_cast<double>(D)));
+    tiling.causal = (o.causal != 0) ? 1u : 0u;   // ★ 之前漏了：FATTiling tiling{} 零初始化 → 恒为 0
 
     // ---------------- workspace（公式必须和 catlass_kernel.asc 里的一致） ----------------
     const size_t wsSize = catlass_kernel::get_fat_workspace_size(coreNum, B_q, B_k, D);
