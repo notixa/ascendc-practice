@@ -144,9 +144,7 @@ public:
         LayoutV layoutV{B_k * STACK_NUM, headDim, headDim * headNum};
         LayoutOTmp layoutOTmp{B_q, headDim};
 
-        const uint32_t SB = B_q * B_k * STACK_NUM;   // 一个 S 槽的元素数
-        uint32_t spOffset = GetBlockIdx() * fat_ws::S_SLOTS * SB;   // S/P 区：S 占 S_SLOTS 槽
-        uint32_t pOffset  = GetBlockIdx() * SB;                     // P 仍单槽
+        uint32_t spOffset = GetBlockIdx() * B_q * B_k * STACK_NUM;
         uint32_t oTmpOffset = GetBlockIdx() * B_q * headDim;
 
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += AscendC::GetBlockNum()) {
@@ -165,13 +163,13 @@ public:
 
                 GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, headDim};
                 mmadQK(
-                    qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset + (stackIdx % fat_ws::S_SLOTS) * SB], dummyBlockTable, layoutQ, layoutK,
+                    qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
                     actualShapeQK, nIdx, taskInfo.nLoop, B_q, taskInfo.noMaskEnd, headNum * headDim);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPV(
-                    pGm[pOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
+                    pGm[spOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
                     nIdx, taskInfo.nLoop, B_q, taskInfo.noMaskEnd, headNum * headDim, smReady);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
             }
@@ -185,7 +183,7 @@ public:
 
                 GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, headDim};
                 mmadQKTail(
-                    qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset + (stackIdx % fat_ws::S_SLOTS) * SB], dummyBlockTable, layoutQ, layoutK,
+                    qGm[taskInfo.qOffset], kGm[kvOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
                     actualShapeQK, maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim,
                     taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 K 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
@@ -193,7 +191,7 @@ public:
 
                 GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
                 mmadPVTail(
-                    pGm[pOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
+                    pGm[spOffset], vGm[kvOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
                     maskedIdx, taskInfo.visibleKBlockNum, B_q, taskInfo.visibleEnd, headNum * headDim, smReady,
                     taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 V 不预搬 → 死等
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
@@ -276,9 +274,7 @@ public:
         //    直接拿 GetBlockIdx() 当 task 索引会让 numTask < 2*coreNum 时 subcore 1 完全不跑，
         //    而 AIC 的跨核 wait 需要两个 subcore 都置位 → 死锁。
         const uint32_t coreIdx = AscendC::GetBlockIdx() / AscendC::GetSubBlockNum();
-        const uint32_t SB = B_q * B_k * STACK_NUM;            // 一个 S 槽的元素数
-        uint32_t spOffset = coreIdx * fat_ws::S_SLOTS * SB;   // S 区基址（S_SLOTS 个槽）
-        uint32_t pOffset  = coreIdx * SB;                     // P 区基址（单槽）
+        uint32_t spOffset = coreIdx * B_q * B_k * STACK_NUM;
         uint32_t oTmpOffset = coreIdx * B_q * headDim;
 
         for (uint32_t taskIdx = coreIdx; taskIdx < t->numTask; taskIdx += AscendC::GetBlockNum()) {
@@ -296,7 +292,7 @@ public:
 
                 Arch::CrossCoreWaitFlag(qkReady);
                 onlineSoftmax(
-                    pGm[pOffset], sGm[spOffset + (stackIdx % fat_ws::S_SLOTS) * SB], layoutP, layoutS, onlineSoftmaxShape, (stackIdx == 0) ? 1u : 0u,
+                    pGm[spOffset], sGm[spOffset], layoutP, layoutS, onlineSoftmaxShape, (stackIdx == 0) ? 1u : 0u,
                     taskInfo.qRowNum, 1u, 0u);
 
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
@@ -315,7 +311,7 @@ public:
                 GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, headDim};
 
                 onlineSoftmax(
-                    pGm[pOffset], sGm[spOffset + (stackIdx % fat_ws::S_SLOTS) * SB], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
+                    pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
                     (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
                 FATT("s"); // softmax 返回
 
