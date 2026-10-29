@@ -176,6 +176,7 @@ public:
         AscendC::GlobalTensor<int32_t> gBlockTable, LayoutA layoutA, LayoutB layoutB, GemmCoord actualOriShape,
         uint32_t& nIdx, uint32_t& nLoop, uint32_t& blockSize, uint32_t kvSeqlen, uint32_t strideKV)
     {
+        FATQK("QK0 enter nIdx nLoop", nIdx, nLoop);
         uint32_t rowNum = actualOriShape[0];
         uint32_t embed = actualOriShape[2];
         uint32_t kLoop = CeilDiv<L1TileShape::K>(embed);
@@ -223,7 +224,8 @@ public:
                 // AscendC::printf("actualNextShape[0]:%d\n", actualNextShape[0]);
                 // AscendC::printf("actualNextShape[1]:%d\n", actualNextShape[1]);
                 // AscendC::printf("actualNextShape[2]:%d\n", actualNextShape[2]);
-                FATQK("QKa gCOffset stackTile", gCOffset, stackTile);
+                FATQK("QKa nIdx nLoop", nIdx, nLoop);
+                FATQK("QKa2 gCOffset stackTile", gCOffset, stackTile);
                 computeQK(
                     gA, gB[gBOffset], gC[gCOffset], gB[gBNextOffset], layoutA, layoutB, layOutSTemp, actualShape,
                     actualNextShape, blockStackIdx, nkBlockNextIdx, nkBlockLoop, firstItr, endItr, initMmad, firstQtr,
