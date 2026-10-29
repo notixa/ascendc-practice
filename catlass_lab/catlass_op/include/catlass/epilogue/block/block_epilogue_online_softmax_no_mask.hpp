@@ -712,6 +712,7 @@ public:
                 FAT_INT_DUMP("E9 colNumPad rowOffsetIoGm", columnNumPad, rowOffsetIoGm);
                 FAT_UB_DUMP("E8 ls0 ls1(未scale)", lsUbTensor, 0, 1);
                 FAT_UB_DUMP("E8 ls8 ls9", lsUbTensor, 8, 9);
+                FAT_UB_DUMP("E8 ls256 ls257", lsUbTensor, 256, 257);
                 ScaleS((pingpongFlag * MAX_UB_S_ELEM_NUM), rowNumCurLoop, columnNumRound);
                 SubCoreCompute<MaskCategory::NO_MASK>(
                     gOutputCurLoop, layoutOutputCurLoop, rowOffsetCurLoop, isFirstStackTile, columnNumRound,
