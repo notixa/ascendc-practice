@@ -326,6 +326,29 @@ int main(int argc, char** argv)
         printf("EXPECT: m0=%.6f m1=%.6f  dm=%.6f  gl_total=%.6f  go_total=%.6f  O[0]=%.6f\n",
                m0, m1, w0, glT, goT, goT / glT);
         printf("GOLDEN: O[0][0]=%.6f\n", static_cast<double>(F16ToF32Exact(hgold[0])));
+
+        // GM 里残留的 S 是【最后一个 stack】的：N=768 时 = keys 512..767（未乘 scale）
+        printf("EXPECT S(keys 512..519, 未scale):");
+        for (size_t j = 0; j < 8; ++j) {
+            double a = 0.0;
+            for (uint32_t d = 0; d < D; ++d) {
+                a += static_cast<double>(F16ToF32Exact(hq[d])) *
+                     static_cast<double>(F16ToF32Exact(hk[(split + j) * D + d]));
+            }
+            printf(" %.4f", a);
+        }
+        printf("\n");
+        // 同时给一份 keys 0..7 的，作为"取错偏移"的对照
+        printf("EXPECT S(keys 0..7, 未scale)   :");
+        for (size_t j = 0; j < 8; ++j) {
+            double a = 0.0;
+            for (uint32_t d = 0; d < D; ++d) {
+                a += static_cast<double>(F16ToF32Exact(hq[d])) *
+                     static_cast<double>(F16ToF32Exact(hk[j * D + d]));
+            }
+            printf(" %.4f", a);
+        }
+        printf("\n");
     }
 
     // ---- 每个 q 块第一行的 O vs golden（配合设备侧 go/gl 打点算"应该是多少"）----
