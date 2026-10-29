@@ -150,9 +150,11 @@ public:
         for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += AscendC::GetBlockNum()) {
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk, causal);
 
+            uint32_t stackIdx = 0;
+
             uint32_t singleGroupHeads = 1;
             mmadQK.loadQGM(qGm[taskInfo.qOffset], layoutQ, taskInfo.qRowNum, singleGroupHeads, headNum);
-            for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM) {
+            for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM, stackIdx++) {
                 uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.visibleEnd - nIdx * B_k) ?
                                        B_k * STACK_NUM :
                                        taskInfo.visibleEnd - nIdx * B_k;
@@ -171,7 +173,8 @@ public:
                     nIdx, taskInfo.nLoop, B_q, taskInfo.noMaskEnd, headNum * headDim, smReady);
                 Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
             }
-            for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum; maskedIdx += STACK_NUM) {
+            for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum;
+                 maskedIdx += STACK_NUM, stackIdx++) {
                 uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdx * B_k) ?
                                        B_k * STACK_NUM :
                                        taskInfo.visibleEnd - maskedIdx * B_k;
@@ -278,7 +281,9 @@ public:
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk, causal);
             uint32_t oOffset =
                 taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
-            for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM) {
+
+            uint32_t stackIdx = 0;
+            for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM, stackIdx++) {
                 uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.noMaskEnd - nIdx * B_k) ?
                                        B_k * STACK_NUM :
                                        taskInfo.noMaskEnd - nIdx * B_k;
@@ -287,7 +292,7 @@ public:
 
                 Arch::CrossCoreWaitFlag(qkReady);
                 onlineSoftmax(
-                    pGm[spOffset], sGm[spOffset], layoutP, layoutS, onlineSoftmaxShape, (nIdx == 0) ? 1u : 0u,
+                    pGm[spOffset], sGm[spOffset], layoutP, layoutS, onlineSoftmaxShape, (stackIdx == 0) ? 1u : 0u,
                     taskInfo.qRowNum, 1u, 0u);
 
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
@@ -295,10 +300,10 @@ public:
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
-                    (nIdx == 0) ? 1u : 0u,
-                    (nIdx + STACK_NUM >= taskInfo.nLoop) && (taskInfo.nLoop >= taskInfo.visibleKBlockNum), 0u);
+                    (stackIdx == 0) ? 1u : 0u, (stackIdx == taskInfo.totalStackNum - 1) ? 1u : 0u, 0u);
             }
-            for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum; maskedIdx += STACK_NUM) {
+            for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum;
+                 maskedIdx += STACK_NUM, stackIdx++) {
                 uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.visibleEnd - maskedIdx * B_k) ?
                                        B_k * STACK_NUM :
                                        taskInfo.visibleEnd - maskedIdx * B_k;
@@ -307,7 +312,7 @@ public:
 
                 onlineSoftmax(
                     pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
-                    (maskedIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
+                    (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
                 FATT("s"); // softmax 返回
 
                 Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
@@ -317,7 +322,7 @@ public:
                 GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
                 rescaleO(
                     oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
-                    (maskedIdx == 0) ? 1u : 0u, maskedIdx + STACK_NUM >= taskInfo.visibleKBlockNum, 0u);
+                    (stackIdx == 0) ? 1u : 0u, (stackIdx == taskInfo.totalStackNum - 1) ? 1u : 0u, 0u);
                 FATT("r"); // rescale 完成
             }
         }
@@ -347,6 +352,7 @@ private:
         uint32_t visibleEnd;
         uint32_t visibleKBlockNum;
         uint32_t maskTailS;
+        uint32_t totalStackNum;
     };
     Arch::Resource<ArchTag> resource;
     Arch::CrossCoreFlag qkReady{QK_READY_ID};
@@ -370,6 +376,10 @@ private:
         info.maskTailS = info.noMaskEnd % B_k;
         info.nLoop = (info.noMaskEnd + B_k - 1) / B_k;
         info.visibleKBlockNum = (info.visibleEnd + B_k - 1) / B_k;
+        uint32_t stackNumSeg1 = (info.nLoop + STACK_NUM - 1) / STACK_NUM;
+        uint32_t stackNumSeg2 = causal ? (info.visibleKBlockNum - info.nLoop + STACK_NUM - 1) / STACK_NUM : 0;
+        info.totalStackNum = stackNumSeg1 + stackNumSeg2;
+
         return info;
     }
 };
