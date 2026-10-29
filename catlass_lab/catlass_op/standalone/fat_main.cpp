@@ -18,6 +18,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
+#include <algorithm>
 #include <random>
 #include <vector>
 
@@ -160,6 +162,8 @@ int main(int argc, char** argv)
     if (argc > 1) o.n = static_cast<uint32_t>(atoi(argv[1]));
     if (argc > 2) o.h = static_cast<uint32_t>(atoi(argv[2]));
     if (argc > 3) o.causal = atoi(argv[3]);
+    int iters = 0;                 // 第 6 个参数：>0 时做性能测量（warmup 10 / iters / repeats 5 / 中位数）
+    if (argc > 6) iters = atoi(argv[6]);
     int brokenMask = 0;
     // 用法: fat_bench N H causal blockDim [brokenMask]
     //   brokenMask=1 时把 mask 表的 64..127 行替换成 0..63 行（验证 sb1 是否读到 mask 前 64 行）
@@ -263,11 +267,14 @@ int main(int argc, char** argv)
     // ---------------- launch ----------------
     printf("[host] launching ...\n");
     fflush(stdout);
-    catlass_kernel::fat(hardwareSyncAddr, coreNum, stream,
-                        static_cast<uint8_t*>(qDev), static_cast<uint8_t*>(kDev),
-                        static_cast<uint8_t*>(vDev), static_cast<uint8_t*>(maskDev),
-                        static_cast<uint8_t*>(oDev), pS, pP, pOt,
-                        static_cast<uint8_t*>(tilingDev));
+    auto launch = [&]() {
+        catlass_kernel::fat(hardwareSyncAddr, coreNum, stream,
+                            static_cast<uint8_t*>(qDev), static_cast<uint8_t*>(kDev),
+                            static_cast<uint8_t*>(vDev), static_cast<uint8_t*>(maskDev),
+                            static_cast<uint8_t*>(oDev), pS, pP, pOt,
+                            static_cast<uint8_t*>(tilingDev));
+    };
+    launch();
     printf("[host] launched, waiting ...\n");
     fflush(stdout);
     ACL_OK(aclrtSynchronizeStream(stream));
@@ -289,11 +296,36 @@ int main(int argc, char** argv)
             badIdx = i;
         }
     }
+    // ---------------- 性能测量（零 Python launcher 口径）----------------
+    if (iters > 0) {
+        const double pairs = o.causal ? (static_cast<double>(N) * (N + 1) / 2.0)
+                                      : (static_cast<double>(N) * N);
+        const double flops = 2.0 * static_cast<double>(B) * H * pairs * D * 2.0;   // QK + PV
+        std::vector<double> samples;
+        for (int w = 0; w < 10; ++w) { launch(); }
+        ACL_OK(aclrtSynchronizeStream(stream));
+        for (int rep = 0; rep < 5; ++rep) {
+            auto t0 = std::chrono::steady_clock::now();
+            for (int it = 0; it < iters; ++it) { launch(); }
+            ACL_OK(aclrtSynchronizeStream(stream));
+            auto t1 = std::chrono::steady_clock::now();
+            samples.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count() / iters);
+        }
+        std::sort(samples.begin(), samples.end());
+        const double med = samples[samples.size() / 2];
+        printf("PERF: median = %.4f ms/iter   (5 rounds:", med);
+        for (double v : samples) printf(" %.4f", v);
+        printf(")\n");
+        printf("PERF: %.2f TFLOPS  (B=%u N=%u H=%u D=%u causal=%d, %s)\n",
+               flops / (med * 1e-3) / 1e12, B, N, H, D, o.causal,
+               o.causal ? "causal: pairs=N(N+1)/2" : "full: pairs=N*N");
+    }
+
     printf("max_err = %.6f   (at %zu: got %.4f expect %.4f)\n", maxErr, badIdx,
            static_cast<double>(F16ToF32Exact(ho[badIdx])), static_cast<double>(F16ToF32Exact(hgold[badIdx])));
 
     // ---- 两 stack 分解的期望值：验证 oTmp(stack0)/oTmp(stack1)/gl 哪个错 ----
-    if (o.causal == 0 && N >= 640 && H == 1) {   // 第二个 stack 从 key 512 开始，期望值同构
+    if (o.causal == 0 && N >= 640 && H == 1 && B == 1) {   // 期望值推导假设 H=1,B=1
         const size_t split = 512;              // STACK_NUM*B_k：段1 第一次调用覆盖 keys 0..511
         auto dotp = [&](size_t t) {
             double a = 0.0;
@@ -446,7 +478,7 @@ int main(int argc, char** argv)
     }
 
     // ---------------- 数值定位 dump：把 S / P / O 的第一行打出来 ----------------
-    {
+    if (H == 1 && B == 1) {
         std::vector<float> hS(8, -12345.f);
         std::vector<uint16_t> hP(8, 0xFC00);   // -inf 占位
         ACL_OK(aclrtMemcpy(hS.data(), 8 * sizeof(float), pS, 8 * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
