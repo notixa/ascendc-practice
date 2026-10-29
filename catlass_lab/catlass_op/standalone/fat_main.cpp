@@ -293,7 +293,7 @@ int main(int argc, char** argv)
            static_cast<double>(F16ToF32Exact(ho[badIdx])), static_cast<double>(F16ToF32Exact(hgold[badIdx])));
 
     // ---- 两 stack 分解的期望值：验证 oTmp(stack0)/oTmp(stack1)/gl 哪个错 ----
-    if (o.causal == 0 && N == 768 && H == 1) {
+    if (o.causal == 0 && N >= 640 && H == 1) {   // 第二个 stack 从 key 512 开始，期望值同构
         const size_t split = 512;              // STACK_NUM*B_k：段1 第一次调用覆盖 keys 0..511
         auto dotp = [&](size_t t) {
             double a = 0.0;
