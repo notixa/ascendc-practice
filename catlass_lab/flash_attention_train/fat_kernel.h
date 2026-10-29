@@ -264,6 +264,7 @@ public:
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk);
             uint32_t oOffset =
                 taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
+            FATT1("AIV: enter seg1, nLoop=", taskInfo.nLoop);
             for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM) {
                 uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.noMaskEnd - nIdx * B_k) ?
                                        B_k * STACK_NUM :
@@ -286,6 +287,7 @@ public:
                     oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
                     (nIdx == 0) ? 1u : 0u, false, 0u);
             }
+            FATT1("AIV: enter seg2, visibleKBlk=", taskInfo.visibleKBlockNum);
             for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum; maskedIdx += STACK_NUM) {
                 uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.visibleEnd - maskedIdx * B_k) ?
                                        B_k * STACK_NUM :
@@ -293,7 +295,11 @@ public:
 
                 GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, headDim};
 
+                FATT1("AIV: seg2 before masked softmax, kRowNum=", kRowNum);
                 onlineSoftmax(
+                    pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
+                    (maskedIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
+                FATT("AIV: seg2 masked softmax returned");                onlineSoftmax(
                     pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
                     (maskedIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
 
