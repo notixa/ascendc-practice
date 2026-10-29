@@ -107,9 +107,19 @@ void Golden(const Options& o,
         for (uint32_t p = 0; p < N; ++p) {
             for (uint32_t t = 0; t < N; ++t) {
                 if (o.causal) {
-                    const uint32_t r = static_cast<uint32_t>(p % 128);
-                    const uint32_t pat = gBrokenMask ? (r % 64) : r;
-                    if (t > pat) { s[static_cast<size_t>(p) * N + t] = -1e30; continue; }
+                    // kernel 的 mask 表按【块内局部坐标】索引：行 = q 块内行号，列 = kv 块内列号
+                    const uint32_t iBlk = static_cast<uint32_t>(p / 128), rLow = static_cast<uint32_t>(p % 128);
+                    const uint32_t kBlk = static_cast<uint32_t>(t / 128), cLow = static_cast<uint32_t>(t % 128);
+                    bool masked;
+                    if (kBlk > iBlk) {
+                        masked = true;                      // 未来的 kv 块，全屏蔽
+                    } else if (kBlk == iBlk) {
+                        const uint32_t pat = gBrokenMask ? (rLow % 64) : rLow;
+                        masked = (cLow > pat);              // 对角块：列 > 行 就屏蔽
+                    } else {
+                        masked = false;                     // 过去的 kv 块，全可见
+                    }
+                    if (masked) { s[static_cast<size_t>(p) * N + t] = -1e30; continue; }
                 }
                 double acc = 0.0;
                 for (uint32_t dd = 0; dd < D; ++dd) {
@@ -151,7 +161,9 @@ int main(int argc, char** argv)
     if (argc > 2) o.h = static_cast<uint32_t>(atoi(argv[2]));
     if (argc > 3) o.causal = atoi(argv[3]);
     int brokenMask = 0;
-    if (argc > 4) brokenMask = atoi(argv[4]);   // 1 = 把 mask 的 64..127 行改成 0..63 行（验证用）
+    // 用法: fat_bench N H causal blockDim [brokenMask]
+    //   brokenMask=1 时把 mask 表的 64..127 行替换成 0..63 行（验证 sb1 是否读到 mask 前 64 行）
+    if (argc > 5) brokenMask = atoi(argv[5]);
     if (argc > 4) o.blockDim = static_cast<uint32_t>(atoi(argv[4]));
     const uint32_t B_q = 128, B_k = 128;
     const uint32_t B = o.batch, N = o.n, H = o.h, D = o.d;
