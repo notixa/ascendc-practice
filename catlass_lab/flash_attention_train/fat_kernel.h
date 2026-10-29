@@ -18,8 +18,9 @@
 // ── 临时诊断：-DFAT_TRACE 才生效，定完位就删 ──
 #if defined(FAT_TRACE)
 // 极简：单字符 + 不换行，避免把设备端 print buffer 打满
-#define FATT(msg) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF(msg); } } while (0)
-#define FATT1(msg, a) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF(msg); } } while (0)
+// 必须带 \n：device 侧 PRINTF 没有换行不会 flush
+#define FATT(msg) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF(msg "\n"); } } while (0)
+#define FATT1(msg, a) do { if (AscendC::GetBlockIdx() == 0) { AscendC::PRINTF(msg "\n"); } } while (0)
 #else
 #define FATT(msg) do { } while (0)
 #define FATT1(msg, a) do { } while (0)
