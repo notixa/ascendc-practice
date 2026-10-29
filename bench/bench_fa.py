@@ -235,8 +235,16 @@ def main():
         default=os.path.join(ROOT, "catlass_lab/catlass_op/build/libcatlass_fat.so"),
     )
     ap.add_argument("--atol", type=float, default=2e-2)
+    ap.add_argument("--cases", default=None,
+                    help="覆盖内置 CASES，格式 N:H[,N:H...]（B=1, D=128）")
+    ap.add_argument("--json", default=None,
+                    help="把逐 case 结果写成 JSON（供 bench_all.py 汇总）")
     args = ap.parse_args()
 
+    cases = CASES
+    if args.cases:
+        cases = [(1, int(h), int(n), 128) for n, h in (c.split(":") for c in args.cases.split(","))]
+    json_rows = []
     backends = {}
     if args.only in (None, "catlass"):
         backends["catlass"] = make_catlass(args.so)
@@ -254,7 +262,7 @@ def main():
     print(f"warmup={WARMUP} iters={ITERS} repeats={REPEATS}（每轮取中位数）\n")
 
     rows = []
-    for batch, heads, n, d in CASES:
+    for batch, heads, n, d in cases:
         if d != 128:
             print(
                 f"skip B={batch} H={heads} N={n} D={d}（CATLASS 只支持 head_dim=128）"
@@ -329,10 +337,16 @@ def main():
                     f"{tflops:7.1f} TFLOPS{peak}{warn}"
                 )
                 rows.append((name, causal, batch, heads, n, med, tflops))
+                json_rows.append({"name": name, "causal": int(bool(causal)), "batch": batch,
+                                  "heads": heads, "n": n, "d": 128, "ms": med,
+                                  "tflops": tflops})
 
                 # 顺便把 device-only 时间也打出来，方便和上面的数对比
                 if gf is not None:
                     med_r, lo_r, hi_r, _ = timeit(gf.replay_only)
+                    json_rows.append({"name": name + "-device", "causal": int(bool(causal)),
+                                      "batch": batch, "heads": heads, "n": n, "d": 128,
+                                      "ms": med_r, "tflops": float("nan")})
                     print(
                         f"  [{tag}]       └─ device-only (纯 replay) {med_r:8.3f} ms  "
                         f"[{lo_r:.3f}, {hi_r:.3f}]"
@@ -370,6 +384,12 @@ def main():
         print(
             "注意：causal 行两边 FLOPs 相同，但绝对 FLOPs 只有 full 的一半，不要跨行比较 TFLOPS"
         )
+
+    if args.json:
+        import json as _json
+        with open(args.json, "w") as f:
+            _json.dump(json_rows, f, indent=1)
+        print(f"[json] 已写入 {args.json}（{len(json_rows)} 条）")
 
 
 if __name__ == "__main__":

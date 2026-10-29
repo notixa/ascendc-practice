@@ -172,6 +172,7 @@ int main(int argc, char** argv)
     //   brokenMask=1 时把 mask 表的 64..127 行替换成 0..63 行（验证 sb1 是否读到 mask 前 64 行）
     if (argc > 5) brokenMask = atoi(argv[5]);
     if (argc > 4) o.blockDim = static_cast<uint32_t>(atoi(argv[4]));
+    if (const char* e = getenv("FAT_BATCH")) o.batch = static_cast<uint32_t>(atoi(e));   // batch（默认 1）
     const uint32_t B_q = 128, B_k = 128;
     const uint32_t B = o.batch, N = o.n, H = o.h, D = o.d;
 
