@@ -39,10 +39,13 @@ namespace fat_ws {
 
 constexpr uint32_t STACK_NUM = 4;
 constexpr uint32_t NUM_SLOTS = 1;
+// S 单独双缓冲：同一 core 的相邻 stack 交替写，避免「AIC 写 S(k+1)」与
+// 「AIV 读 S(k)」在跨核时序上的重叠（P/oTmp 按现有握手已安全，不需要换槽）。
+constexpr uint32_t S_SLOTS = 2;
 
 inline size_t ElemsS(uint32_t coreNum, uint32_t B_q, uint32_t B_k)
 {
-    return static_cast<size_t>(NUM_SLOTS) * coreNum * B_q * B_k * STACK_NUM;
+    return static_cast<size_t>(NUM_SLOTS) * S_SLOTS * coreNum * B_q * B_k * STACK_NUM;
 }
 inline size_t ElemsP(uint32_t coreNum, uint32_t B_q, uint32_t B_k)
 {
