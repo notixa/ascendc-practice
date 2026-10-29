@@ -273,6 +273,33 @@ int main(int argc, char** argv)
     printf("max_err = %.6f   (at %zu: got %.4f expect %.4f)\n", maxErr, badIdx,
            static_cast<double>(F16ToF32Exact(ho[badIdx])), static_cast<double>(F16ToF32Exact(hgold[badIdx])));
 
+    // ---- 每个 q 块第一行的 O vs golden（配合设备侧 go/gl 打点算"应该是多少"）----
+    {
+        const size_t rowElems = static_cast<size_t>(H) * D;
+        const size_t nBlk = (static_cast<size_t>(N) + 127) / 128;
+        for (size_t b = 0; b < nBlk; ++b) {
+            const size_t p = b * 128;
+            if (p >= static_cast<size_t>(N)) break;
+            printf("tok %4zu (i=%zu) O   [0..3] =", p, b);
+            for (int d = 0; d < 4; ++d) printf(" %.6f", (double)F16ToF32Exact(ho[p * rowElems + d]));
+            printf("\n");
+            printf("tok %4zu (i=%zu) Ogold[0..3] =", p, b);
+            for (int d = 0; d < 4; ++d) printf(" %.6f", (double)F16ToF32Exact(hgold[p * rowElems + d]));
+            printf("\n");
+        }
+        // oTmp（GM，最后一个 stack 的值）：前 2 行各 4 列
+        std::vector<float> ot(16, 0.f);
+        ACL_OK(aclrtMemcpy(ot.data(), 8 * sizeof(float), pOt, 8 * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
+        ACL_OK(aclrtMemcpy(ot.data() + 8, 8 * sizeof(float), pOt + 128, 8 * sizeof(float),
+                           ACL_MEMCPY_DEVICE_TO_HOST));
+        printf("oTmp row0 [0..7] =");
+        for (int d = 0; d < 8; ++d) printf(" %.6f", (double)ot[d]);
+        printf("\n");
+        printf("oTmp row1 [0..7] =");
+        for (int d = 0; d < 8; ++d) printf(" %.6f", (double)ot[8 + d]);
+        printf("\n");
+    }
+
     // ---- 按 q 块（每 B_q=128 个 token）分段统计误差，定位是哪个 i 坏 ----
     {
         const size_t rowElems = static_cast<size_t>(H) * D;   // 每个 token 的元素数
