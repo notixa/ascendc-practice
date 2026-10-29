@@ -474,7 +474,27 @@ int main(int argc, char** argv)
                 printf(" %.4f", a);
             }
             printf("\n");
-            printf("（若与 EXPECT S(512..519) 相同，则说明第 256 列被 key512 覆盖）\n");
+            // 搜索：S[0][256..263] 这 8 个值到底对应 (哪一行, 哪 8 个 key)
+            double bestErr = 1e30;
+            int bestRow = -1;
+            long bestKey = -1;
+            for (int r = 0; r < 8; ++r) {
+                for (long j = 0; j + 8 <= static_cast<long>(N); ++j) {
+                    double e = 0.0;
+                    for (int k = 0; k < 8 && e < bestErr; ++k) {
+                        double a = 0.0;
+                        for (uint32_t d = 0; d < D; ++d) {
+                            a += static_cast<double>(F16ToF32Exact(hq[r * D + d])) *
+                                 static_cast<double>(F16ToF32Exact(hk[(j + k) * D + d]));
+                        }
+                        e += std::fabs(a - s256[k]);
+                    }
+                    if (e < bestErr) { bestErr = e; bestRow = r; bestKey = j; }
+                }
+            }
+            printf("SEARCH: S[0][256..263] 最匹配 row=%d  keys=%ld..%ld  总误差=%.4f\n",
+                   bestRow, bestKey, bestKey + 7, bestErr);
+            printf("（若 row=0 keys=768 则 S 正确；若 keys=512 则被前半段覆盖；其它值即错位偏移）\n");
         }
         printf("P[0][0..7] =");
         for (int i = 0; i < 8; ++i) printf(" %.6f", (double)F16ToF32Exact(hP[i]));
