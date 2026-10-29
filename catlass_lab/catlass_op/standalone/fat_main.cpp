@@ -23,6 +23,7 @@
 #include <random>
 #include <vector>
 
+#include <tiling/platform/platform_ascendc.h>
 #include "acl/acl.h"
 #include "kernel_operator.h"
 
@@ -232,9 +233,15 @@ int main(int argc, char** argv)
     ACL_OK(aclrtMemset(oDev, elems * 2, 0, elems * 2));
 
     const uint32_t numTask = B * ((N + B_q - 1) / B_q) * H;
+    // AIC 核数：运行时从平台查询（别写死；910B3 = 20，A2 = 24 等）
+    uint32_t aicMax = 1;
+    {
+        int64_t n = platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreNumAic();
+        if (n > 0) aicMax = static_cast<uint32_t>(n);
+    }
     uint32_t coreNum = o.blockDim;
     if (coreNum == 0) {
-        coreNum = (numTask < 20u) ? numTask : 20u;
+        coreNum = (numTask < aicMax) ? numTask : aicMax;
         if (coreNum == 0) coreNum = 1;
     }
 
@@ -254,7 +261,8 @@ int main(int argc, char** argv)
     const size_t wsSize = catlass_kernel::get_fat_workspace_size(coreNum, B_q, B_k, D);
     void* wsDev = nullptr;
     ACL_OK(aclrtMalloc(&wsDev, wsSize, ACL_MEM_MALLOC_HUGE_FIRST));
-    printf("[host] coreNum=%u  numTask=%u  workspace=%.1f KB\n", coreNum, numTask, wsSize / 1024.0);
+    printf("[host] coreNum=%u/%u (AIC)  numTask=%u  workspace=%.1f KB%s\n", coreNum, aicMax, numTask,
+           wsSize / 1024.0, (coreNum < aicMax && numTask > 0) ? "  ← 核未用满" : "");
 
     // 三段偏移必须与 kernel 里的 spOffset / oTmpOffset 寻址一致（公式见 fat_ws）
     size_t off = 0;
