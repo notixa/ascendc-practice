@@ -164,6 +164,9 @@ int main(int argc, char** argv)
     if (argc > 3) o.causal = atoi(argv[3]);
     int iters = 0;                 // 第 6 个参数：>0 时做性能测量（warmup 10 / iters / repeats 5 / 中位数）
     if (argc > 6) iters = atoi(argv[6]);
+    int verbose = 0;
+    if (argc > 7) verbose = atoi(argv[7]);
+    if (const char* e = getenv("FAT_VERBOSE")) verbose = (atoi(e) != 0);
     int brokenMask = 0;
     // 用法: fat_bench N H causal blockDim [brokenMask]
     //   brokenMask=1 时把 mask 表的 64..127 行替换成 0..63 行（验证 sb1 是否读到 mask 前 64 行）
@@ -182,7 +185,7 @@ int main(int argc, char** argv)
     ACL_OK(aclrtCreateStream(&stream));
     uint64_t hardwareSyncAddr = 0;
     ACL_OK(aclrtGetHardwareSyncAddr(reinterpret_cast<void**>(&hardwareSyncAddr)));
-    printf("[host] hardwareSyncAddr = 0x%llx\n", (unsigned long long)hardwareSyncAddr);
+    if (verbose) printf("[host] hardwareSyncAddr = 0x%llx\n", (unsigned long long)hardwareSyncAddr);
 
     // ---------------- 造数据（0.25 的整数倍，fp16 精确） ----------------
     const size_t elems = static_cast<size_t>(B) * N * H * D;
@@ -265,8 +268,7 @@ int main(int argc, char** argv)
     ACL_OK(aclrtMemcpy(tilingDev, sizeof(FATTiling), &tiling, sizeof(FATTiling), ACL_MEMCPY_HOST_TO_DEVICE));
 
     // ---------------- launch ----------------
-    printf("[host] launching ...\n");
-    fflush(stdout);
+    if (verbose) { printf("[host] launching ...\n"); fflush(stdout); }
     auto launch = [&]() {
         catlass_kernel::fat(hardwareSyncAddr, coreNum, stream,
                             static_cast<uint8_t*>(qDev), static_cast<uint8_t*>(kDev),
@@ -275,10 +277,9 @@ int main(int argc, char** argv)
                             static_cast<uint8_t*>(tilingDev));
     };
     launch();
-    printf("[host] launched, waiting ...\n");
-    fflush(stdout);
+    if (verbose) { printf("[host] launched, waiting ...\n"); fflush(stdout); }
     ACL_OK(aclrtSynchronizeStream(stream));
-    printf("[host] kernel finished\n");
+    if (verbose) printf("[host] kernel finished\n");
 
     // ---------------- 校验 ----------------
     std::vector<uint16_t> ho(elems, 0);
@@ -325,7 +326,7 @@ int main(int argc, char** argv)
            static_cast<double>(F16ToF32Exact(ho[badIdx])), static_cast<double>(F16ToF32Exact(hgold[badIdx])));
 
     // ---- 两 stack 分解的期望值：验证 oTmp(stack0)/oTmp(stack1)/gl 哪个错 ----
-    if (o.causal == 0 && N >= 640 && H == 1 && B == 1) {   // 期望值推导假设 H=1,B=1
+    if (verbose && o.causal == 0 && N >= 640 && H == 1 && B == 1) {   // 期望值推导假设 H=1,B=1
         const size_t split = 512;              // STACK_NUM*B_k：段1 第一次调用覆盖 keys 0..511
         auto dotp = [&](size_t t) {
             double a = 0.0;
@@ -410,6 +411,7 @@ int main(int argc, char** argv)
         printf("\n");
     }
 
+    if (verbose) {
     // ---- 每个 q 块第一行的 O vs golden（配合设备侧 go/gl 打点算"应该是多少"）----
     {
         const size_t rowElems = static_cast<size_t>(H) * D;
@@ -436,12 +438,15 @@ int main(int argc, char** argv)
         for (int d = 0; d < 8; ++d) printf(" %.6f", (double)ot[8 + d]);
         printf("\n");
     }
+    }
+
 
     // ---- 按 q 块（每 B_q=128 个 token）分段统计误差，定位是哪个 i 坏 ----
     {
         const size_t rowElems = static_cast<size_t>(H) * D;   // 每个 token 的元素数
         const size_t nBlk = (static_cast<size_t>(N) + 127) / 128;
-        printf("per-q-block max_err:");
+        if (verbose) {
+    printf("per-q-block max_err:");
         for (size_t b = 0; b < nBlk; ++b) {
             double be = 0.0;
             const size_t p0 = b * 128, p1 = std::min<size_t>(p0 + 128, N);
@@ -477,8 +482,10 @@ int main(int argc, char** argv)
         printf("\n");
     }
 
+    }
+
     // ---------------- 数值定位 dump：把 S / P / O 的第一行打出来 ----------------
-    if (H == 1 && B == 1) {
+    if (verbose && H == 1 && B == 1) {
         std::vector<float> hS(8, -12345.f);
         std::vector<uint16_t> hP(8, 0xFC00);   // -inf 占位
         ACL_OK(aclrtMemcpy(hS.data(), 8 * sizeof(float), pS, 8 * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
