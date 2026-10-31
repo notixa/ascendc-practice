@@ -303,11 +303,11 @@ public:
                         Arch::CrossCoreWaitFlag(qkReady);
                         onlineSoftmax(
                             pGm[spOffset], sGm[spOffset], layoutP, layoutS, onlineSoftmaxShape,
-                            (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
+                            (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, stackIdx % SLOT_NUM);
                     } else {
                         onlineSoftmax(
                             pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
-                            (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
+                            (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, stackIdx % SLOT_NUM, qkReady);
                         maskedIdxQK += STACK_NUM * B_k;
                     }
                     Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
@@ -328,7 +328,8 @@ public:
                     rescaleO(
                         oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
                         ((stackIdx - PRELAUNCH_NUM) == 0) ? 1u : 0u,
-                        ((stackIdx - PRELAUNCH_NUM) == taskInfo.totalStackNum - 1) ? 1u : 0u, 0u);
+                        ((stackIdx - PRELAUNCH_NUM) == taskInfo.totalStackNum - 1) ? 1u : 0u,
+                        (stackIdx - PRELAUNCH_NUM) % SLOT_NUM);
                     if (is_diag) {
                         maskedIdxPV += STACK_NUM * B_k;
                     }
