@@ -52,6 +52,8 @@ public:
     static constexpr uint32_t PV_READY_ID = 3;
 
     static constexpr uint32_t STACK_NUM = 4;
+    static constexpr uint32_t PRELAUNCH_NUM = 2;
+    static constexpr uint32_t SLOT_NUM = PRELAUNCH_NUM + 1;
 
     CATLASS_DEVICE
     FATKernel()
@@ -125,10 +127,10 @@ public:
         LayoutV layoutV{B_k * STACK_NUM, headDim, headDim * headNum};
         LayoutOTmp layoutOTmp{B_q, headDim};
 
-        uint32_t spOffset = GetBlockIdx() * B_q * B_k * STACK_NUM;
-        uint32_t oTmpOffset = GetBlockIdx() * B_q * headDim;
+        uint32_t coreIdx = AscendC::GetBlockIdx();
+        uint32_t coreNum = AscendC::GetBlockNum();
 
-        for (uint32_t taskIdx = AscendC::GetBlockIdx(); taskIdx < numTask; taskIdx += AscendC::GetBlockNum()) {
+        for (uint32_t taskIdx = coreIdx; taskIdx < numTask; taskIdx += coreNum) {
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk, causal);
 
             uint32_t stackIdx = 0;
@@ -136,42 +138,69 @@ public:
             uint32_t singleGroupHeads = 1;
             mmadQK.loadQGM(qGm[taskInfo.qOffset], layoutQ, taskInfo.qRowNum, singleGroupHeads, headNum);
             uint32_t kvBaseOffset = taskInfo.b * N_k * headNum * headDim + taskInfo.h * headDim;
-            for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM, stackIdx++) {
-                uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.noMaskEnd - nIdx * B_k) ?
-                                       B_k * STACK_NUM :
-                                       taskInfo.noMaskEnd - nIdx * B_k;
 
-                GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, headDim};
-                mmadQK(
-                    qGm[taskInfo.qOffset], kGm[kvBaseOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
-                    actualShapeQK, nIdx, taskInfo.nLoop, B_k, taskInfo.noMaskEnd, headNum * headDim);
-                Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
+            uint32_t maskedIdxQK = taskInfo.noMaskEnd;
+            uint32_t maskedIdxPV = taskInfo.noMaskEnd;
+            uint32_t maskedBlkIdxQK = taskInfo.nLoop;
+            uint32_t maskedBlkIdxPV = taskInfo.nLoop;
 
-                GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
-                mmadPV(
-                    pGm[spOffset], vGm[kvBaseOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
-                    nIdx, taskInfo.nLoop, B_k, taskInfo.noMaskEnd, headNum * headDim, smReady);
-                Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
-            }
-            for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum;
-                 maskedIdx += STACK_NUM, stackIdx++) {
-                uint32_t kRowNum = (B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdx * B_k) ?
-                                       B_k * STACK_NUM :
-                                       taskInfo.visibleEnd - maskedIdx * B_k;
+            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PRELAUNCH_NUM; stackIdx++) {
+                if (stackIdx < taskInfo.totalStackNum) {
+                    bool is_diag = (causal != 0) && (stackIdx >= taskInfo.noMaskStackNum);
 
-                GemmCoord actualShapeQK{taskInfo.qRowNum, kRowNum, headDim};
-                mmadQKTail(
-                    qGm[taskInfo.qOffset], kGm[kvBaseOffset], sGm[spOffset], dummyBlockTable, layoutQ, layoutK,
-                    actualShapeQK, maskedIdx, taskInfo.visibleKBlockNum, B_k, taskInfo.visibleEnd, headNum * headDim,
-                    taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 K 不预搬 → 死等
-                Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
+                    uint32_t qkIdx = stackIdx * STACK_NUM;
+                    uint32_t qkKRowNum =
+                        is_diag ?
+                            ((B_k * STACK_NUM < N_k - maskedIdxQK) ? B_k * STACK_NUM : N_k - maskedIdxQK) :
+                            ((B_k * STACK_NUM < taskInfo.noMaskEnd - qkIdx * B_k) ? B_k * STACK_NUM :
+                                                                                    taskInfo.noMaskEnd - qkIdx * B_k);
+                    uint32_t sOffset =
+                        (stackIdx % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM + coreIdx * B_q * B_k * STACK_NUM;
+                    GemmCoord actualShapeQK{taskInfo.qRowNum, qkKRowNum, headDim};
+                    if (!is_diag) {
+                        mmadQK(
+                            qGm[taskInfo.qOffset], kGm[kvBaseOffset], sGm[sOffset], dummyBlockTable, layoutQ, layoutK,
+                            actualShapeQK, qkIdx, taskInfo.nLoop, B_k, taskInfo.noMaskEnd, headNum * headDim);
+                    } else {
+                        mmadQKTail(
+                            qGm[taskInfo.qOffset], kGm[kvBaseOffset], sGm[sOffset], dummyBlockTable, layoutQ, layoutK,
+                            actualShapeQK, maskedBlkIdxQK, taskInfo.visibleKBlockNum, B_k, taskInfo.visibleEnd,
+                            headNum * headDim, (maskedBlkIdxQK == taskInfo.nLoop) ? taskInfo.maskTailS : 0, true);
+                        maskedBlkIdxQK += STACK_NUM;
+                        maskedIdxQK += STACK_NUM * B_k;
+                    }
+                    Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
+                }
 
-                GemmCoord actualShapePV{taskInfo.qRowNum, headDim, kRowNum};
-                mmadPVTail(
-                    pGm[spOffset], vGm[kvBaseOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV, actualShapePV,
-                    maskedIdx, taskInfo.visibleKBlockNum, B_k, taskInfo.visibleEnd, headNum * headDim, smReady,
-                    taskInfo.maskTailS, true); // ★ preloadFlag：首块必须 true，否则 V 不预搬 → 死等
-                Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
+                if (stackIdx >= PRELAUNCH_NUM) {
+                    bool is_diag = (causal != 0) && ((stackIdx - PRELAUNCH_NUM) >= taskInfo.noMaskStackNum);
+                    uint32_t pvIdx = (stackIdx - PRELAUNCH_NUM) * STACK_NUM;
+                    uint32_t pvKRowNum =
+                        is_diag ?
+                            ((B_k * STACK_NUM < N_k - maskedIdxPV) ? B_k * STACK_NUM : N_k - maskedIdxPV) :
+                            ((B_k * STACK_NUM < taskInfo.noMaskEnd - pvIdx * B_k) ? B_k * STACK_NUM :
+                                                                                    taskInfo.noMaskEnd - pvIdx * B_k);
+
+                    uint32_t pOffset = ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM +
+                                       coreIdx * B_q * B_k * STACK_NUM;
+                    uint32_t oTmpOffset =
+                        ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
+                    GemmCoord actualShapePV{taskInfo.qRowNum, headDim, pvKRowNum};
+                    if (!is_diag) {
+                        mmadPV(
+                            pGm[pOffset], vGm[kvBaseOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV,
+                            actualShapePV, pvIdx, taskInfo.nLoop, B_k, taskInfo.noMaskEnd, headNum * headDim, smReady);
+                    } else {
+                        mmadPVTail(
+                            pGm[pOffset], vGm[kvBaseOffset], oTmpGm[oTmpOffset], dummyBlockTable, layoutP, layoutV,
+                            actualShapePV, maskedBlkIdxPV, taskInfo.visibleKBlockNum, B_k, taskInfo.visibleEnd,
+                            headNum * headDim, smReady, (maskedBlkIdxPV == taskInfo.nLoop) ? taskInfo.maskTailS : 0,
+                            true);
+                        maskedBlkIdxPV += STACK_NUM;
+                        maskedIdxPV += STACK_NUM * B_k;
+                    }
+                    Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
+                }
             }
         }
         AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(EVENT_ID0);
@@ -245,56 +274,65 @@ public:
         LayoutOTmp layoutOTmp{B_q, headDim};
         LayoutMask layoutMask{B_q, B_k, B_k};
 
-        // ★★ AIV 侧：两个 subcore（2k、2k+1）同属 AIC k，必须除以 GetSubBlockNum()。
-        //    直接拿 GetBlockIdx() 当 task 索引会让 numTask < 2*coreNum 时 subcore 1 完全不跑，
-        //    而 AIC 的跨核 wait 需要两个 subcore 都置位 → 死锁。
         const uint32_t coreIdx = AscendC::GetBlockIdx() / AscendC::GetSubBlockNum();
-        uint32_t spOffset = coreIdx * B_q * B_k * STACK_NUM;
-        uint32_t oTmpOffset = coreIdx * B_q * headDim;
 
-        for (uint32_t taskIdx = coreIdx; taskIdx < t->numTask; taskIdx += AscendC::GetBlockNum()) {
+        uint32_t coreNum = AscendC::GetBlockNum();
+
+        for (uint32_t taskIdx = coreIdx; taskIdx < t->numTask; taskIdx += coreNum) {
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk, causal);
             uint32_t oOffset =
                 taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
 
+            uint32_t maskedIdxQK = taskInfo.noMaskEnd;
+            uint32_t maskedIdxPV = taskInfo.noMaskEnd;
+
             uint32_t stackIdx = 0;
-            for (uint32_t nIdx = 0; nIdx < taskInfo.nLoop; nIdx += STACK_NUM, stackIdx++) {
-                uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.noMaskEnd - nIdx * B_k) ?
-                                       B_k * STACK_NUM :
-                                       taskInfo.noMaskEnd - nIdx * B_k;
+            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PRELAUNCH_NUM; stackIdx++) {
+                if (stackIdx < taskInfo.totalStackNum) {
+                    bool is_diag = (causal != 0) && (stackIdx >= taskInfo.noMaskStackNum);
+                    uint32_t spOffset =
+                        (stackIdx % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM + coreIdx * B_q * B_k * STACK_NUM;
+                    uint32_t qkIdx = stackIdx * STACK_NUM;
+                    uint32_t qkKRowNum =
+                        is_diag ?
+                            ((B_k * STACK_NUM < N_k - maskedIdxQK) ? B_k * STACK_NUM : N_k - maskedIdxQK) :
+                            ((B_k * STACK_NUM < taskInfo.noMaskEnd - qkIdx * B_k) ? B_k * STACK_NUM :
+                                                                                    taskInfo.noMaskEnd - qkIdx * B_k);
+                    GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, qkKRowNum, headDim};
+                    if (!is_diag) {
+                        Arch::CrossCoreWaitFlag(qkReady);
+                        onlineSoftmax(
+                            pGm[spOffset], sGm[spOffset], layoutP, layoutS, onlineSoftmaxShape,
+                            (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u);
+                    } else {
+                        onlineSoftmax(
+                            pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
+                            (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
+                        maskedIdxQK += STACK_NUM * B_k;
+                    }
+                    Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
+                }
 
-                GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, headDim};
-
-                Arch::CrossCoreWaitFlag(qkReady);
-                onlineSoftmax(
-                    pGm[spOffset], sGm[spOffset], layoutP, layoutS, onlineSoftmaxShape, (stackIdx == 0) ? 1u : 0u,
-                    taskInfo.qRowNum, 1u, 0u);
-
-                Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
-                Arch::CrossCoreWaitFlag(pvReady);
-                GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
-                rescaleO(
-                    oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
-                    (stackIdx == 0) ? 1u : 0u, (stackIdx == taskInfo.totalStackNum - 1) ? 1u : 0u, 0u);
-            }
-            for (uint32_t maskedIdx = taskInfo.nLoop; maskedIdx < taskInfo.visibleKBlockNum;
-                 maskedIdx += STACK_NUM, stackIdx++) {
-                uint32_t kRowNum = (STACK_NUM * B_k < taskInfo.visibleEnd - maskedIdx * B_k) ?
-                                       B_k * STACK_NUM :
-                                       taskInfo.visibleEnd - maskedIdx * B_k;
-
-                GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, kRowNum, headDim};
-
-                onlineSoftmax(
-                    pGm[spOffset], sGm[spOffset], maskGm, layoutP, layoutS, layoutMask, onlineSoftmaxShape,
-                    (stackIdx == 0) ? 1u : 0u, taskInfo.qRowNum, 1u, 0u, qkReady);
-
-                Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
-                Arch::CrossCoreWaitFlag(pvReady);
-                GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, kRowNum};
-                rescaleO(
-                    oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
-                    (stackIdx == 0) ? 1u : 0u, (stackIdx == taskInfo.totalStackNum - 1) ? 1u : 0u, 0u);
+                if (stackIdx >= PRELAUNCH_NUM) {
+                    bool is_diag = (causal != 0) && ((stackIdx - PRELAUNCH_NUM) >= taskInfo.noMaskStackNum);
+                    uint32_t pvIdx = (stackIdx - PRELAUNCH_NUM) * STACK_NUM;
+                    uint32_t pvKRowNum =
+                        is_diag ?
+                            ((B_k * STACK_NUM < N_k - maskedIdxPV) ? B_k * STACK_NUM : N_k - maskedIdxPV) :
+                            ((B_k * STACK_NUM < taskInfo.noMaskEnd - pvIdx * B_k) ? B_k * STACK_NUM :
+                                                                                    taskInfo.noMaskEnd - pvIdx * B_k);
+                    uint32_t oTmpOffset =
+                        ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
+                    Arch::CrossCoreWaitFlag(pvReady);
+                    GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, pvKRowNum};
+                    rescaleO(
+                        oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
+                        ((stackIdx - PRELAUNCH_NUM) == 0) ? 1u : 0u,
+                        ((stackIdx - PRELAUNCH_NUM) == taskInfo.totalStackNum - 1) ? 1u : 0u, 0u);
+                    if (is_diag) {
+                        maskedIdxPV += STACK_NUM * B_k;
+                    }
+                }
             }
         }
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2);
@@ -324,6 +362,7 @@ private:
         uint32_t visibleKBlockNum;
         uint32_t maskTailS;
         uint32_t totalStackNum;
+        uint32_t noMaskStackNum;
     };
     Arch::Resource<ArchTag> resource;
     Arch::CrossCoreFlag qkReady{QK_READY_ID};
@@ -349,6 +388,7 @@ private:
         info.visibleKBlockNum = (info.visibleEnd + B_k - 1) / B_k;
         uint32_t stackNumSeg1 = (info.nLoop + STACK_NUM - 1) / STACK_NUM;
         uint32_t stackNumSeg2 = causal ? (info.visibleKBlockNum - info.nLoop + STACK_NUM - 1) / STACK_NUM : 0;
+        info.noMaskStackNum = stackNumSeg1;
         info.totalStackNum = stackNumSeg1 + stackNumSeg2;
 
         return info;

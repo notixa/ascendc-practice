@@ -38,7 +38,7 @@ struct FATTiling {
 namespace fat_ws {
 
 constexpr uint32_t STACK_NUM = 4;
-constexpr uint32_t NUM_SLOTS = 1;
+constexpr uint32_t NUM_SLOTS = 3;
 
 inline size_t ElemsS(uint32_t coreNum, uint32_t B_q, uint32_t B_k)
 {
