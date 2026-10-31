@@ -52,7 +52,7 @@ public:
     static constexpr uint32_t PV_READY_ID = 3;
 
     static constexpr uint32_t STACK_NUM = 4;
-    static constexpr uint32_t PRELAUNCH_NUM = 2;
+    static constexpr uint32_t PRELAUNCH_NUM = 2;   // 流水深度上限（非 causal 用）
     static constexpr uint32_t SLOT_NUM = PRELAUNCH_NUM + 1;
 
     CATLASS_DEVICE
@@ -139,12 +139,16 @@ public:
             mmadQK.loadQGM(qGm[taskInfo.qOffset], layoutQ, taskInfo.qRowNum, singleGroupHeads, headNum);
             uint32_t kvBaseOffset = taskInfo.b * N_k * headNum * headDim + taskInfo.h * headDim;
 
+            // 流水深度：causal 走 0 拍（官方 causal 路径的延迟量是变长的
+            //   preLaunchStackNum = (P-1)*blockStackNum + noMaskTailInteStackNum，
+            //   随 i%4 变化，不是固定 P 个 stack；等把那段变长逻辑搬过来再开）
+            const uint32_t PL = (causal != 0) ? 0u : PRELAUNCH_NUM;
             uint32_t maskedIdxQK = taskInfo.noMaskEnd;
             uint32_t maskedIdxPV = taskInfo.noMaskEnd;
             uint32_t maskedBlkIdxQK = taskInfo.nLoop;
             uint32_t maskedBlkIdxPV = taskInfo.nLoop;
 
-            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PRELAUNCH_NUM; stackIdx++) {
+            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PL; stackIdx++) {
                 if (stackIdx < taskInfo.totalStackNum) {
                     bool is_diag = (causal != 0) && (stackIdx >= taskInfo.noMaskStackNum);
 
@@ -172,19 +176,19 @@ public:
                     Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
                 }
 
-                if (stackIdx >= PRELAUNCH_NUM) {
-                    bool is_diag = (causal != 0) && ((stackIdx - PRELAUNCH_NUM) >= taskInfo.noMaskStackNum);
-                    uint32_t pvIdx = (stackIdx - PRELAUNCH_NUM) * STACK_NUM;
+                if (stackIdx >= PL) {
+                    bool is_diag = (causal != 0) && ((stackIdx - PL) >= taskInfo.noMaskStackNum);
+                    uint32_t pvIdx = (stackIdx - PL) * STACK_NUM;
                     uint32_t pvKRowNum =
                         is_diag ?
                             ((B_k * STACK_NUM < N_k - maskedIdxPV) ? B_k * STACK_NUM : N_k - maskedIdxPV) :
                             ((B_k * STACK_NUM < taskInfo.noMaskEnd - pvIdx * B_k) ? B_k * STACK_NUM :
                                                                                     taskInfo.noMaskEnd - pvIdx * B_k);
 
-                    uint32_t pOffset = ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM +
+                    uint32_t pOffset = ((stackIdx - PL) % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM +
                                        coreIdx * B_q * B_k * STACK_NUM;
                     uint32_t oTmpOffset =
-                        ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
+                        ((stackIdx - PL) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
                     GemmCoord actualShapePV{taskInfo.qRowNum, headDim, pvKRowNum};
                     if (!is_diag) {
                         mmadPV(
@@ -283,11 +287,15 @@ public:
             uint32_t oOffset =
                 taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
 
+            // 流水深度：causal 走 0 拍（官方 causal 路径的延迟量是变长的
+            //   preLaunchStackNum = (P-1)*blockStackNum + noMaskTailInteStackNum，
+            //   随 i%4 变化，不是固定 P 个 stack；等把那段变长逻辑搬过来再开）
+            const uint32_t PL = (causal != 0) ? 0u : PRELAUNCH_NUM;
             uint32_t maskedIdxQK = taskInfo.noMaskEnd;
             uint32_t maskedIdxPV = taskInfo.noMaskEnd;
 
             uint32_t stackIdx = 0;
-            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PRELAUNCH_NUM; stackIdx++) {
+            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PL; stackIdx++) {
                 if (stackIdx < taskInfo.totalStackNum) {
                     bool is_diag = (causal != 0) && (stackIdx >= taskInfo.noMaskStackNum);
                     uint32_t spOffset =
@@ -313,23 +321,23 @@ public:
                     Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
                 }
 
-                if (stackIdx >= PRELAUNCH_NUM) {
-                    bool is_diag = (causal != 0) && ((stackIdx - PRELAUNCH_NUM) >= taskInfo.noMaskStackNum);
-                    uint32_t pvIdx = (stackIdx - PRELAUNCH_NUM) * STACK_NUM;
+                if (stackIdx >= PL) {
+                    bool is_diag = (causal != 0) && ((stackIdx - PL) >= taskInfo.noMaskStackNum);
+                    uint32_t pvIdx = (stackIdx - PL) * STACK_NUM;
                     uint32_t pvKRowNum =
                         is_diag ?
                             ((B_k * STACK_NUM < N_k - maskedIdxPV) ? B_k * STACK_NUM : N_k - maskedIdxPV) :
                             ((B_k * STACK_NUM < taskInfo.noMaskEnd - pvIdx * B_k) ? B_k * STACK_NUM :
                                                                                     taskInfo.noMaskEnd - pvIdx * B_k);
                     uint32_t oTmpOffset =
-                        ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
+                        ((stackIdx - PL) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
                     Arch::CrossCoreWaitFlag(pvReady);
                     GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, pvKRowNum};
                     rescaleO(
                         oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
-                        ((stackIdx - PRELAUNCH_NUM) == 0) ? 1u : 0u,
-                        ((stackIdx - PRELAUNCH_NUM) == taskInfo.totalStackNum - 1) ? 1u : 0u,
-                        (stackIdx - PRELAUNCH_NUM) % SLOT_NUM);
+                        ((stackIdx - PL) == 0) ? 1u : 0u,
+                        ((stackIdx - PL) == taskInfo.totalStackNum - 1) ? 1u : 0u,
+                        (stackIdx - PL) % SLOT_NUM);
                     if (is_diag) {
                         maskedIdxPV += STACK_NUM * B_k;
                     }
