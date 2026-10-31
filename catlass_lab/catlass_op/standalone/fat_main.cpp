@@ -23,7 +23,6 @@
 #include <random>
 #include <vector>
 
-#include <tiling/platform/platform_ascendc.h>
 #include "acl/acl.h"
 #include "kernel_operator.h"
 
@@ -233,11 +232,16 @@ int main(int argc, char** argv)
     ACL_OK(aclrtMemset(oDev, elems * 2, 0, elems * 2));
 
     const uint32_t numTask = B * ((N + B_q - 1) / B_q) * H;
-    // AIC 核数：运行时从平台查询（别写死；910B3 = 20，A2 = 24 等）
+    // AIC 核数：运行时从 ACL 查询（别写死；910B3 = 20）。
+    // ★ 用 aclrtGetDeviceInfo 而不是 PlatformAscendCManager：后者要链接 libtiling_api，
+    //   而 fat_bench 只链了 libascendcl + libm，会在链接期报 undefined symbol。
     uint32_t aicMax = 1;
     {
-        int64_t n = platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreNumAic();
-        if (n > 0) aicMax = static_cast<uint32_t>(n);
+        int64_t aicNum = 0;
+        const aclError e = aclrtGetDeviceInfo(0, ACL_DEV_ATTR_AICORE_CORE_NUM, &aicNum);
+        if (e == ACL_SUCCESS && aicNum > 0) {
+            aicMax = static_cast<uint32_t>(aicNum);
+        }
     }
     uint32_t coreNum = o.blockDim;
     if (coreNum == 0) {
