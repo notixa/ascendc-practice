@@ -149,11 +149,12 @@ public:
                     bool is_diag = (causal != 0) && (stackIdx >= taskInfo.noMaskStackNum);
 
                     uint32_t qkIdx = stackIdx * STACK_NUM;
-                    uint32_t qkKRowNum =
-                        is_diag ?
-                            ((B_k * STACK_NUM < N_k - maskedIdxQK) ? B_k * STACK_NUM : N_k - maskedIdxQK) :
-                            ((B_k * STACK_NUM < taskInfo.noMaskEnd - qkIdx * B_k) ? B_k * STACK_NUM :
-                                                                                    taskInfo.noMaskEnd - qkIdx * B_k);
+                    uint32_t qkKRowNum = is_diag ? ((B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdxQK) ?
+                                                        B_k * STACK_NUM :
+                                                        taskInfo.visibleEnd - maskedIdxQK) :
+                                                   ((B_k * STACK_NUM < taskInfo.noMaskEnd - qkIdx * B_k) ?
+                                                        B_k * STACK_NUM :
+                                                        taskInfo.noMaskEnd - qkIdx * B_k);
                     uint32_t sOffset =
                         (stackIdx % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM + coreIdx * B_q * B_k * STACK_NUM;
                     GemmCoord actualShapeQK{taskInfo.qRowNum, qkKRowNum, headDim};
@@ -175,11 +176,12 @@ public:
                 if (stackIdx >= PRELAUNCH_NUM) {
                     bool is_diag = (causal != 0) && ((stackIdx - PRELAUNCH_NUM) >= taskInfo.noMaskStackNum);
                     uint32_t pvIdx = (stackIdx - PRELAUNCH_NUM) * STACK_NUM;
-                    uint32_t pvKRowNum =
-                        is_diag ?
-                            ((B_k * STACK_NUM < N_k - maskedIdxPV) ? B_k * STACK_NUM : N_k - maskedIdxPV) :
-                            ((B_k * STACK_NUM < taskInfo.noMaskEnd - pvIdx * B_k) ? B_k * STACK_NUM :
-                                                                                    taskInfo.noMaskEnd - pvIdx * B_k);
+                    uint32_t pvKRowNum = is_diag ? ((B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdxPV) ?
+                                                        B_k * STACK_NUM :
+                                                        taskInfo.visibleEnd - maskedIdxPV) :
+                                                   ((B_k * STACK_NUM < taskInfo.noMaskEnd - pvIdx * B_k) ?
+                                                        B_k * STACK_NUM :
+                                                        taskInfo.noMaskEnd - pvIdx * B_k);
 
                     uint32_t pOffset = ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM +
                                        coreIdx * B_q * B_k * STACK_NUM;
@@ -293,11 +295,12 @@ public:
                     uint32_t spOffset =
                         (stackIdx % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM + coreIdx * B_q * B_k * STACK_NUM;
                     uint32_t qkIdx = stackIdx * STACK_NUM;
-                    uint32_t qkKRowNum =
-                        is_diag ?
-                            ((B_k * STACK_NUM < N_k - maskedIdxQK) ? B_k * STACK_NUM : N_k - maskedIdxQK) :
-                            ((B_k * STACK_NUM < taskInfo.noMaskEnd - qkIdx * B_k) ? B_k * STACK_NUM :
-                                                                                    taskInfo.noMaskEnd - qkIdx * B_k);
+                    uint32_t qkKRowNum = is_diag ? ((B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdxQK) ?
+                                                        B_k * STACK_NUM :
+                                                        taskInfo.visibleEnd - maskedIdxQK) :
+                                                   ((B_k * STACK_NUM < taskInfo.noMaskEnd - qkIdx * B_k) ?
+                                                        B_k * STACK_NUM :
+                                                        taskInfo.noMaskEnd - qkIdx * B_k);
                     GemmCoord onlineSoftmaxShape{taskInfo.qRowNum, qkKRowNum, headDim};
                     if (!is_diag) {
                         Arch::CrossCoreWaitFlag(qkReady);
@@ -316,11 +319,12 @@ public:
                 if (stackIdx >= PRELAUNCH_NUM) {
                     bool is_diag = (causal != 0) && ((stackIdx - PRELAUNCH_NUM) >= taskInfo.noMaskStackNum);
                     uint32_t pvIdx = (stackIdx - PRELAUNCH_NUM) * STACK_NUM;
-                    uint32_t pvKRowNum =
-                        is_diag ?
-                            ((B_k * STACK_NUM < N_k - maskedIdxPV) ? B_k * STACK_NUM : N_k - maskedIdxPV) :
-                            ((B_k * STACK_NUM < taskInfo.noMaskEnd - pvIdx * B_k) ? B_k * STACK_NUM :
-                                                                                    taskInfo.noMaskEnd - pvIdx * B_k);
+                    uint32_t pvKRowNum = is_diag ? ((B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdxPV) ?
+                                                        B_k * STACK_NUM :
+                                                        taskInfo.visibleEnd - maskedIdxPV) :
+                                                   ((B_k * STACK_NUM < taskInfo.noMaskEnd - pvIdx * B_k) ?
+                                                        B_k * STACK_NUM :
+                                                        taskInfo.noMaskEnd - pvIdx * B_k);
                     uint32_t oTmpOffset =
                         ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
                     Arch::CrossCoreWaitFlag(pvReady);
