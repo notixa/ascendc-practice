@@ -63,6 +63,11 @@ def make_catlass(so_path):
     torch.ops.load_library(so_path)
 
     def run(q_bnhd, k_bnhd, v_bnhd, causal, block_dim=0):
+        # ★ 必须传 torch 当前流的句柄。
+        #   op schema 是 `int stream=0`，不传就退化成 ACL 默认流（nullptr）；
+        #   而 torch.npu.Event 记在 torch 的当前流上 → 两个流之间没有依赖，
+        #   elapsed_time 测不到 kernel，只剩 host 侧开销（恒定 ~0.23 ms，与 shape 无关）。
+        st = getattr(torch.npu.current_stream(), "npu_stream", 0)
         return torch.ops.catlass.fat(
             q_bnhd,
             k_bnhd,
@@ -71,6 +76,7 @@ def make_catlass(so_path):
             1.0 / math.sqrt(q_bnhd.size(-1)),
             0,
             block_dim,
+            st,
         )
 
     return run
