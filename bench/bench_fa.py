@@ -243,7 +243,18 @@ def main():
 
     cases = CASES
     if args.cases:
-        cases = [(1, int(h), int(n), 128) for n, h in (c.split(":") for c in args.cases.split(","))]
+        # 支持 "N:H" 或 "B:N:H"（后者让 bench_all 能对齐 CATLASS 的 batch）
+        cases = []
+        for spec in args.cases.split(","):
+            f = spec.split(":")
+            if len(f) == 2:
+                n, h = f
+                b = 1
+            elif len(f) == 3:
+                b, n, h = f
+            else:
+                raise SystemExit(f"--cases 格式错误: {spec}（应为 N:H 或 B:N:H）")
+            cases.append((int(b), int(h), int(n), 128))
     json_rows = []
     backends = {}
     if args.only in (None, "catlass"):
