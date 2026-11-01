@@ -10,7 +10,16 @@ import triton.language as tl
 from torch_npu.npu import get_device_properties
 import triton.backends.ascend.runtime
 
-@triton.autotune(configs=[], key=["N_q", "N_k", "IS_CAUSAL"], hints={"multibuffer":[False, True]},)
+@triton.autotune(configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk})
+        for bq, bk in [
+            (96, 128),
+            (128, 128),
+            (64, 128),
+            (32, 256),
+            (64, 256),
+            (128, 64),
+            (64, 64),
+        ]], key=["N_q", "N_k", "IS_CAUSAL"],)
 @triton.jit
 def fla_fwd_kernel(
     q_ptr,
