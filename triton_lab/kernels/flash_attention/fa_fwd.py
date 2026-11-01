@@ -8,8 +8,9 @@ import torch_npu
 import triton
 import triton.language as tl
 from torch_npu.npu import get_device_properties
+import triton.backends.ascend.runtime
 
-
+@triton.autotune(configs=[], key=["N_q", "N_k", "IS_CAUSAL"], hints={"multibuffer":[False, True]},)
 @triton.jit
 def fla_fwd_kernel(
     q_ptr,
@@ -37,19 +38,19 @@ def fla_fwd_kernel(
     stride_lh,
     stride_lq,
     batch,
-    N_q,
-    N_k,
     head,
     scale,
-    delta_qk,
+    N_q:tl.constexpr,
+    N_k:tl.constexpr,
+    delta_qk:tl.constexpr,
     BLOCK_Q: tl.constexpr,
     BLOCK_K: tl.constexpr,
     HEAD_DIM: tl.constexpr,
-    EVEN_Q: tl.constexpr,
-    EVEN_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
-    MULTI_BLOCK: tl.constexpr,
 ):
+    EVEN_Q = N_q % BLOCK_Q == 0
+    EVEN_K = N_k % BLOCK_K == 0
+    MULTI_BLOCK = (N_k + BLOCK_K - 1) // BLOCK_K > 1
     blocks_q = tl.cdiv(N_q, BLOCK_Q)
     taskNum = batch * head * blocks_q
     taskIdx = tl.program_id(0)
@@ -168,8 +169,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     head = Q.size(dim=2)
     head_dim = Q.size(dim=3)
 
-    BLOCK_Q, BLOCK_K = 96, 128
-
     O = torch.zeros_like(Q, device=Q.device)
     L = torch.zeros([batch, head, N_q], dtype=torch.float32, device=Q.device)
 
@@ -177,8 +176,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
 
     # 带 tl.dot 的 kernel 用 AI Core 数；纯 Vector 算子用 vector_core_num
     cores = get_device_properties(0).cube_core_num
-
-    multi_block = (N_k + BLOCK_K - 1) // BLOCK_K > 1
 
     delta_qk = N_k - N_q
 
@@ -209,17 +206,12 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         L.stride(1),
         L.stride(2),
         batch,
-        N_q,
-        N_k,
         head,
         scale,
+        N_q=N_q,
+        N_k=N_k,
         delta_qk=delta_qk,
-        BLOCK_Q=BLOCK_Q,
-        BLOCK_K=BLOCK_K,
         HEAD_DIM=head_dim,
-        EVEN_Q=N_q % BLOCK_Q == 0,
-        EVEN_K=N_k % BLOCK_K == 0,
         IS_CAUSAL=causal,
-        MULTI_BLOCK=multi_block,
     )
     return O, L
