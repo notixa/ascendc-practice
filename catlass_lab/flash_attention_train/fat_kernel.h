@@ -132,6 +132,13 @@ public:
 
         for (uint32_t taskIdx = coreIdx; taskIdx < numTask; taskIdx += coreNum) {
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk, causal);
+            // 流水深度自适应：PL = min(PRELAUNCH_NUM, totalStackNum - 1)
+            //   total=1 → 0（无流水可做）
+            //   total=2 → 1（PL=2 会退化成 QK0 QK1 PV0 PV1 完全串行，PL=1 才有重叠）
+            //   total≥3 → 2
+            const uint32_t PL = (taskInfo.totalStackNum == 0) ? 0u
+                              : (taskInfo.totalStackNum > PRELAUNCH_NUM) ? PRELAUNCH_NUM
+                                                                         : (taskInfo.totalStackNum - 1);
 
             uint32_t stackIdx = 0;
 
@@ -144,7 +151,7 @@ public:
             uint32_t maskedBlkIdxQK = taskInfo.nLoop;
             uint32_t maskedBlkIdxPV = taskInfo.nLoop;
 
-            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PRELAUNCH_NUM; stackIdx++) {
+            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PL; stackIdx++) {
                 if (stackIdx < taskInfo.totalStackNum) {
                     bool is_diag = (causal != 0) && (stackIdx >= taskInfo.noMaskStackNum);
 
@@ -173,9 +180,9 @@ public:
                     Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
                 }
 
-                if (stackIdx >= PRELAUNCH_NUM) {
-                    bool is_diag = (causal != 0) && ((stackIdx - PRELAUNCH_NUM) >= taskInfo.noMaskStackNum);
-                    uint32_t pvIdx = (stackIdx - PRELAUNCH_NUM) * STACK_NUM;
+                if (stackIdx >= PL) {
+                    bool is_diag = (causal != 0) && ((stackIdx - PL) >= taskInfo.noMaskStackNum);
+                    uint32_t pvIdx = (stackIdx - PL) * STACK_NUM;
                     uint32_t pvKRowNum = is_diag ? ((B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdxPV) ?
                                                         B_k * STACK_NUM :
                                                         taskInfo.visibleEnd - maskedIdxPV) :
@@ -183,10 +190,10 @@ public:
                                                         B_k * STACK_NUM :
                                                         taskInfo.noMaskEnd - pvIdx * B_k);
 
-                    uint32_t pOffset = ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM +
+                    uint32_t pOffset = ((stackIdx - PL) % SLOT_NUM) * coreNum * B_q * B_k * STACK_NUM +
                                        coreIdx * B_q * B_k * STACK_NUM;
                     uint32_t oTmpOffset =
-                        ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
+                        ((stackIdx - PL) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
                     GemmCoord actualShapePV{taskInfo.qRowNum, headDim, pvKRowNum};
                     if (!is_diag) {
                         mmadPV(
@@ -282,6 +289,13 @@ public:
 
         for (uint32_t taskIdx = coreIdx; taskIdx < t->numTask; taskIdx += coreNum) {
             TaskInfo taskInfo = DecodeTask(taskIdx, N_q, N_k, B_q, B_k, headNum, headDim, delta_qk, causal);
+            // 流水深度自适应：PL = min(PRELAUNCH_NUM, totalStackNum - 1)
+            //   total=1 → 0（无流水可做）
+            //   total=2 → 1（PL=2 会退化成 QK0 QK1 PV0 PV1 完全串行，PL=1 才有重叠）
+            //   total≥3 → 2
+            const uint32_t PL = (taskInfo.totalStackNum == 0) ? 0u
+                              : (taskInfo.totalStackNum > PRELAUNCH_NUM) ? PRELAUNCH_NUM
+                                                                         : (taskInfo.totalStackNum - 1);
             uint32_t oOffset =
                 taskInfo.b * N_q * headNum * headDim + taskInfo.i * B_q * headNum * headDim + taskInfo.h * headDim;
 
@@ -289,7 +303,7 @@ public:
             uint32_t maskedIdxPV = taskInfo.noMaskEnd;
 
             uint32_t stackIdx = 0;
-            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PRELAUNCH_NUM; stackIdx++) {
+            for (stackIdx = 0; stackIdx < taskInfo.totalStackNum + PL; stackIdx++) {
                 if (stackIdx < taskInfo.totalStackNum) {
                     bool is_diag = (causal != 0) && (stackIdx >= taskInfo.noMaskStackNum);
                     uint32_t spOffset =
@@ -316,9 +330,9 @@ public:
                     Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(smReady);
                 }
 
-                if (stackIdx >= PRELAUNCH_NUM) {
-                    bool is_diag = (causal != 0) && ((stackIdx - PRELAUNCH_NUM) >= taskInfo.noMaskStackNum);
-                    uint32_t pvIdx = (stackIdx - PRELAUNCH_NUM) * STACK_NUM;
+                if (stackIdx >= PL) {
+                    bool is_diag = (causal != 0) && ((stackIdx - PL) >= taskInfo.noMaskStackNum);
+                    uint32_t pvIdx = (stackIdx - PL) * STACK_NUM;
                     uint32_t pvKRowNum = is_diag ? ((B_k * STACK_NUM < taskInfo.visibleEnd - maskedIdxPV) ?
                                                         B_k * STACK_NUM :
                                                         taskInfo.visibleEnd - maskedIdxPV) :
@@ -326,14 +340,14 @@ public:
                                                         B_k * STACK_NUM :
                                                         taskInfo.noMaskEnd - pvIdx * B_k);
                     uint32_t oTmpOffset =
-                        ((stackIdx - PRELAUNCH_NUM) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
+                        ((stackIdx - PL) % SLOT_NUM) * coreNum * B_q * headDim + coreIdx * B_q * headDim;
                     Arch::CrossCoreWaitFlag(pvReady);
                     GemmCoord rescaleOShape{taskInfo.qRowNum, headDim, pvKRowNum};
                     rescaleO(
                         oGm[oOffset], oTmpGm[oTmpOffset], layoutO, layoutOTmp, rescaleOShape, taskInfo.qRowNum, 1u,
-                        ((stackIdx - PRELAUNCH_NUM) == 0) ? 1u : 0u,
-                        ((stackIdx - PRELAUNCH_NUM) == taskInfo.totalStackNum - 1) ? 1u : 0u,
-                        (stackIdx - PRELAUNCH_NUM) % SLOT_NUM);
+                        ((stackIdx - PL) == 0) ? 1u : 0u,
+                        ((stackIdx - PL) == taskInfo.totalStackNum - 1) ? 1u : 0u,
+                        (stackIdx - PL) % SLOT_NUM);
                     if (is_diag) {
                         maskedIdxPV += STACK_NUM * B_k;
                     }

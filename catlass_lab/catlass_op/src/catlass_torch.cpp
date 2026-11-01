@@ -34,12 +34,57 @@
 #include <tiling/platform/platform_ascendc.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <tuple>
 
 #include "catlass_kernel.h"
 #include "fat_tiling.h"   // 只含 FATTiling（纯 POD）；FATParams 是设备侧的，不要在这里引
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// workspace 缓存
+//   原来每次调用都 at::empty 三块（S 15MB + P 7.5MB + oTmp 3.75MB ≈ 26MB），
+//   在 910B3 上实测引入 ~0.21 ms 固定开销，把 device 时间（0.03~1.3 ms）完全淹没。
+//
+//   为什么可以跨调用复用：S / P / oTmp 在 kernel 里都是「先写后读」——
+//     QK 写 S → softmax 读 S；softmax 写 P → PV 读 P；PV 写 oTmp → rescale 读 oTmp
+//   没有任何一步依赖 GM 的初值，所以不需要每次清零或重新分配。
+//
+//   键 = (设备索引, blockDim, headDim)：不同设备/核数/head_dim 的 workspace 尺寸不同。
+//   FAT_NO_WS_CACHE=1 可关掉（排查"跨调用残留导致结果不同"这类问题时用）。
+// ---------------------------------------------------------------------------
+using FatWsKey = std::tuple<int, int64_t, int64_t>;
+
+struct FatWsEntry {
+    at::Tensor s;
+    at::Tensor p;
+    at::Tensor ot;
+};
+
+std::mutex& fatWsMutex()
+{
+    static std::mutex m;
+    return m;
+}
+
+std::map<FatWsKey, FatWsEntry>& fatWsCache()
+{
+    // 故意 new 而不 delete：static at::Tensor 的析构可能晚于 torch / ACL 的 teardown，
+    // 那样会在进程退出时崩。缓存本来就是进程级的，泄漏一次可以接受。
+    static std::map<FatWsKey, FatWsEntry>* c = new std::map<FatWsKey, FatWsEntry>();
+    return *c;
+}
+
+bool fatWsCacheEnabled()
+{
+    const char* e = std::getenv("FAT_NO_WS_CACHE");
+    return !(e != nullptr && std::atoi(e) != 0);
+}
 
 // aclrtGetHardwareSyncAddr 在不同 CANN 版本 / 不同 acl 头里的可见性不稳定
 // （torch_npu 也自带一份精简 acl 头，会遮蔽真声明）。它本身是 libascendcl 导出的
@@ -196,12 +241,34 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     // 形状必须与 kernel 的 spOffset / oTmpOffset 一致（公式见 fat_tiling.h 的 fat_ws）：
     //   S/P : [B_q, B_k*STACK_NUM] × NUM_SLOTS × coreNum
     //   oTmp: [B_q, headDim]       × NUM_SLOTS × coreNum
-    auto sDev  = at::empty({static_cast<int64_t>(fat_ws::ElemsS(blockDim, B_Q, B_K))},
-                           q.options().dtype(at::kFloat));
-    auto pDev  = at::empty({static_cast<int64_t>(fat_ws::ElemsP(blockDim, B_Q, B_K))},
-                           q.options().dtype(at::kHalf));
-    auto otDev = at::empty({static_cast<int64_t>(fat_ws::ElemsOt(blockDim, B_Q, headDim))},
-                           q.options().dtype(at::kFloat));
+    const int64_t nS  = static_cast<int64_t>(fat_ws::ElemsS(blockDim, B_Q, B_K));
+    const int64_t nP  = static_cast<int64_t>(fat_ws::ElemsP(blockDim, B_Q, B_K));
+    const int64_t nOt = static_cast<int64_t>(fat_ws::ElemsOt(blockDim, B_Q, headDim));
+
+    at::Tensor sDev, pDev, otDev;
+    const int devIdx = static_cast<int>(q.device().index());
+    if (fatWsCacheEnabled()) {
+        const FatWsKey key{devIdx, static_cast<int64_t>(blockDim), static_cast<int64_t>(headDim)};
+        std::lock_guard<std::mutex> lock(fatWsMutex());
+        auto& entry = fatWsCache()[key];
+        // 首次用到这个 (dev, blockDim, headDim) 才真正分配
+        if (!entry.s.defined() || entry.s.numel() < nS) {
+            entry.s = at::empty({nS}, q.options().dtype(at::kFloat));
+        }
+        if (!entry.p.defined() || entry.p.numel() < nP) {
+            entry.p = at::empty({nP}, q.options().dtype(at::kHalf));
+        }
+        if (!entry.ot.defined() || entry.ot.numel() < nOt) {
+            entry.ot = at::empty({nOt}, q.options().dtype(at::kFloat));
+        }
+        sDev  = entry.s;
+        pDev  = entry.p;
+        otDev = entry.ot;
+    } else {
+        sDev  = at::empty({nS},  q.options().dtype(at::kFloat));
+        pDev  = at::empty({nP},  q.options().dtype(at::kHalf));
+        otDev = at::empty({nOt}, q.options().dtype(at::kFloat));
+    }
 
     auto o3 = at::empty_like(q3);
 
