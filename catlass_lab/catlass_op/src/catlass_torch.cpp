@@ -72,6 +72,27 @@ std::mutex& fatWsMutex()
     return m;
 }
 
+// tiling 也是每调用一次的同步 H2D（from_blob 指向栈内存 → .to(device) 必须同步），
+// 实测 ~50~150 µs，与 shape 无关。tiling 内容在同一个 shape 的循环里是不变的，
+// 所以按"内容 + 设备"缓存：只有内容变了才重新 H2D。
+struct FatTilingEntry {
+    FATTiling host{};
+    bool valid = false;
+    at::Tensor dev;
+};
+
+std::mutex& fatTilingMutex()
+{
+    static std::mutex m;
+    return m;
+}
+
+std::map<int, FatTilingEntry>& fatTilingCache()
+{
+    static std::map<int, FatTilingEntry>* c = new std::map<int, FatTilingEntry>();
+    return *c;
+}
+
 std::map<FatWsKey, FatWsEntry>& fatWsCache()
 {
     // 故意 new 而不 delete：static at::Tensor 的析构可能晚于 torch / ACL 的 teardown，
@@ -230,9 +251,28 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     hostTiling.causal    = 1u;
 
     // FATTiling 是 POD：用 from_blob 借 host 内存 → to(device) 走 torch 的 H2D 拷贝
-    auto tilingDev = at::from_blob(&hostTiling, {static_cast<int64_t>(sizeof(FATTiling))},
-                                   at::TensorOptions().dtype(at::kByte))
-                         .to(q.device());
+    at::Tensor tilingDev;
+    if (fatWsCacheEnabled()) {
+        const int devIdxT = static_cast<int>(q.device().index());
+        const int64_t nBytes = static_cast<int64_t>(sizeof(FATTiling));
+        std::lock_guard<std::mutex> lock(fatTilingMutex());
+        auto& te = fatTilingCache()[devIdxT];
+        if (!te.dev.defined() || te.dev.numel() < nBytes) {
+            te.dev = at::empty({nBytes}, at::TensorOptions().dtype(at::kByte).device(q.device()));
+            te.valid = false;
+        }
+        // 内容没变就不重拷；变了才同步 H2D（copy_ 默认 non_blocking=false，会等拷贝完成）
+        if (!te.valid || std::memcmp(&te.host, &hostTiling, sizeof(FATTiling)) != 0) {
+            te.dev.copy_(at::from_blob(&hostTiling, {nBytes}, at::TensorOptions().dtype(at::kByte)));
+            te.host = hostTiling;
+            te.valid = true;
+        }
+        tilingDev = te.dev;
+    } else {
+        tilingDev = at::from_blob(&hostTiling, {static_cast<int64_t>(sizeof(FATTiling))},
+                                  at::TensorOptions().dtype(at::kByte))
+                        .to(q.device());
+    }
 
     // ---------------- 4. workspace（三块，与 kernel 的 layout stride 对应） ----------------
     //   s     : [coreNum, B_q, B_k]     float
