@@ -10,9 +10,18 @@ import triton.language as tl
 from torch_npu.npu import get_device_properties
 import triton.backends.ascend.runtime
 
-_BQ, _BK = 64, 256
+_TILES = [
+    (96, 128),    # 旧基线，做对照
+    (64, 256),    # 上一轮最优，做对照
+    (128, 256),   # ★ fp16-s 带来的新组合（面积 ×2，迭代数减半）
+    (128, 128),
+    (64, 128),
+    (32, 256),
+    (64, 512),    # 长打：L1 大概会爆 → compile_failed 不影响其它候选
+    (128, 512),   # 长打
+]
 
-@triton.autotune(configs=[triton.Config({"BLOCK_Q": _BQ, "BLOCK_K": _BK})], key=["N_q", "N_k", "IS_CAUSAL"],)
+@triton.autotune(configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES], key=["N_q", "N_k", "IS_CAUSAL"],)
 @triton.jit
 def fla_fwd_kernel(
     q_ptr,
@@ -124,11 +133,11 @@ def fla_fwd_kernel(
             if EVEN_K:
                 k = tl.load(k_block_ptr)
                 v = tl.load(v_block_ptr)
-                s = tl.dot(q, tl.trans(k))
+                s = tl.dot(q, tl.trans(k)).to(tl.float16)
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                s = tl.dot(q, tl.trans(k))
+                s = tl.dot(q, tl.trans(k)).to(tl.float16)
                 k_offsets = j * BLOCK_K + tl.arange(0, BLOCK_K)
                 s = tl.where(k_offsets[None, :] < N_k, s, -float("inf"))
             if IS_CAUSAL:
@@ -141,14 +150,14 @@ def fla_fwd_kernel(
             if MULTI_BLOCK:
                 m = tl.maximum(
                     m_prev, tl.max(s, axis=-1), propagate_nan=tl.PropagateNan.ALL
-                )
+                ).to(m.dtype)
             else:
-                m = tl.maximum(m_prev, tl.max(s, axis=-1))
-            s = tl.exp(s - m[:, None])
+                m = tl.maximum(m_prev, tl.max(s, axis=-1)).to(m.dtype)
+            s = tl.exp((s - m[:, None].to(tl.float16)).to(tl.float16))
             factor = tl.exp(m_prev - m)
-            l = factor * l + tl.sum(s, axis=-1)
+            l = factor * l + tl.sum(s.to(tl.float32), axis=-1)
             o = factor[:, None] * o
-            o = tl.dot(s.to(v.dtype), v, o)
+            o = tl.dot(s, v, o)
             k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
             v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
 
