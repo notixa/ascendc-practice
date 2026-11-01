@@ -158,7 +158,12 @@ def main():
             ok = "OK " if err < 2e-2 else "FAIL"
             print(f"  [{tag}] {ok} graphed max_err={err:.5f}")
 
-            t_base, lo, hi = bench(lambda: fla_fwd(q, k, v, causal=causal))
+            # 基线：未录图的裸调用（fla_fwd 在 GraphedFLA 里已惰性导入）
+            triton_lab = os.path.join(os.path.dirname(HERE), "triton_lab")
+            if triton_lab not in sys.path:
+                sys.path.insert(0, triton_lab)
+            from kernels.flash_attention.fa_fwd import fla_fwd as _fla_fwd  # noqa: PLC0415
+            t_base, lo, hi = bench(lambda: _fla_fwd(q, k, v, causal=causal))
             t_call, lo2, hi2 = bench(lambda: gf(q, k, v))
             t_replay, lo3, hi3 = bench(lambda: gf.replay_only())
 
