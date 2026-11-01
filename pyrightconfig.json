@@ -1,4 +1,22 @@
 {
   "typeCheckingMode": "standard",
-  "reportUnreachable": false
+  "reportUnreachable": false,
+  "reportArgumentType": false,
+  // 本机（x86 编辑环境）没有 torch / torch_npu / triton-ascend，
+  // 代码是在服务器上跑的。关掉缺失导入报错，避免满屏红波浪线。
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  // 让 IDE 至少能找到仓库内的模块
+  "extraPaths": [
+    ".",
+    "triton_lab",
+    "bench",
+    "catlass_lab"
+  ],
+  "pythonVersion": "3.11",
+  "exclude": [
+    "**/build/**",
+    "fa_prof/**",
+    "fat_prof_AB_*/**"
+  ]
 }
