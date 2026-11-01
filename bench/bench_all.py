@@ -188,19 +188,29 @@ def main():
                 say(f"  B{b} N={n:<5} H={h:<3} c={c}  {ms:8.4f} ms")
 
     # ---- Triton ----
+    # ★ device 口径用 --graph 的 replay-only 行；app 口径必须【不带 --graph】，
+    #   否则拿到的还是 device 时间，和 CATLASS(app)/vendor 不可比。
     tri = {}
     if not args.skip_triton:
-        say("\n[3] Triton-Ascend（device 口径取 replay-only 行）...")
-        raw = bench_torch_backend(shapes, args.modes, ["--only", "triton", "--graph"], "triton")
-        for (c, n, h, b, name), (ms, _) in raw.items():
-            if name.endswith("-device"):
-                tri[(c, n, h, b)] = ms
-                say(f"  B{b} N={n:<5} H={h:<3} c={c}  {ms:8.4f} ms  (device-only replay)")
+        if args.scope in ("device", "both"):
+            say("\n[3] Triton-Ascend / device 口径（--graph 的 replay-only 行）...")
+            raw = bench_torch_backend(shapes, args.modes, ["--only", "triton", "--graph"], "triton-dev")
+            for (c, n, h, b, name), (ms, _) in raw.items():
+                if name.endswith("-device"):
+                    tri[(c, n, h, b)] = ms
+                    say(f"  B{b} N={n:<5} H={h:<3} c={c}  {ms:8.4f} ms  (device-only replay)")
+        if args.scope in ("app", "both"):
+            say("\n[4] Triton-Ascend / app 口径（不带 --graph，含 launcher）...")
+            raw = bench_torch_backend(shapes, args.modes, ["--only", "triton"], "triton-app")
+            for (c, n, h, b, name), (ms, _) in raw.items():
+                if name == "triton":
+                    tri[(c, n, h, b)] = ms
+                    say(f"  B{b} N={n:<5} H={h:<3} c={c}  {ms:8.4f} ms  (含 launcher)")
 
     # ---- vendor ----
     ven = {}
     if not args.skip_vendor:
-        say("\n[4] vendor（npu_fusion_attention）...")
+        say("\n[5] vendor（npu_fusion_attention）...")
         raw = bench_torch_backend(shapes, args.modes, ["--only", "vendor"], "vendor")
         for (c, n, h, b, name), (ms, _) in raw.items():
             if name == "vendor":
