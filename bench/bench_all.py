@@ -12,7 +12,7 @@ bench_all.py —— 三个实现（CATLASS / Triton-Ascend / vendor）横向对�
 ★ 两种计时口径（--scope）
     device : CATLASS = fat_bench（C++/ACL 直调）；Triton = --graph 的 device-only replay
              —— 都是"纯 device"，适合比 kernel 本身
-    app    : CATLASS = 走 torch .so（--only catlass）；Triton/vendor 本来就是 torch 调用
+    app    : CATLASS/Triton 都走图捕获（去掉 host launcher）；vendor 是原始 op 调用
              —— 都含框架 launcher，适合比"真实部署端到端"
     both   : 两种都测，表里分两列
 
@@ -181,7 +181,11 @@ def main():
     cat_app = {}
     if not args.skip_catlass and args.scope in ("app", "both"):
         say("\n[2] CATLASS / torch .so（含 launcher，真实部署口径）...")
-        raw = bench_torch_backend(shapes, args.modes, ["--only", "catlass"], "catlass-app")
+        # app 口径：CATLASS 走 torch .so，并用图捕获去掉 host launcher 开销
+        #（裸 op 调用的固定 host 成本 ~0.19 ms，与 shape 无关，会把小 shape 全淹掉；
+        #  确认过程见 bench_all.py 头部注释）
+        raw = bench_torch_backend(shapes, args.modes,
+                                  ["--only", "catlass", "--graph"], "catlass-app")
         for (c, n, h, b, name), (ms, _) in raw.items():
             if name == "catlass":
                 cat_app[(c, n, h, b)] = ms
@@ -266,7 +270,7 @@ def main():
         print("  CATLASS      = fat_bench（C++/ACL 直调，warmup10 + iters×5 轮中位数，零 Python launcher）")
         print("  Triton       = bench_fa.py --graph 的 device-only(纯 replay) 行")
     if show_app:
-        print("  CATLASS(app) = bench_fa.py --only catlass（走 torch op 调用，含 launcher）")
+        print("  CATLASS(app) = bench_fa.py --only catlass --graph（torch + 图捕获）")
     print("  vendor       = npu_fusion_attention（含 torch launcher）")
     print(f"  FLOPs        = 4 × B × H × pairs × D，pairs = N(N+1)/2 (causal) 或 N² (full)，D={args.d}")
     print("  倍数 > 1 表示比 vendor 慢；causal 与 full 的绝对 FLOPs 不同，勿跨行比 TFLOPS")

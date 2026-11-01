@@ -1,5 +1,5 @@
 """
-graph_fa.py —— 用图捕获消除 Triton 的 Python launcher 开销
+graph_fa.py —— 用图捕获消除 FA 后端的 launcher 开销（Triton / CATLASS 通用）
 
 背景（实测）：
     CPU 提交 / 次 = 0.426 ms
@@ -30,13 +30,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "triton_lab"))
 from kernels.flash_attention.fa_fwd import fla_fwd  # noqa: E402
 
 
-class GraphedFLA:
-    """把 fla_fwd 录成一张图，之后只 replay。fla_fwd 本身不用改。"""
+class GraphedFA:
+    """把任意 FA 后端的调用录成一张图，之后只 replay。
 
-    def __init__(self, B, N, H, D, causal=True, warmup=3):
+    call(q, k, v, causal) -> Tensor | (Tensor, ...)   ← 与 bench_fa.py 的 backend 签名一致
+    """
+
+    def __init__(self, B, N, H, D, call, causal=True, warmup=3, label=""):
         dev = "npu"
         self.causal = causal
         self.shape = (B, N, H, D)
+        self.call = call
+        self.label = label
 
         # 静态 buffer：图里录的是【固定地址】，所以输入必须先拷进这里
         self.q = torch.zeros(B, N, H, D, dtype=torch.float16, device=dev)
@@ -44,25 +49,34 @@ class GraphedFLA:
         self.v = torch.zeros_like(self.q)
 
         # ---- ① 预热（必须在捕获前）----
-        # 1) 触发 Triton JIT 编译（编译不能发生在捕获里）
+        # 1) 触发 JIT / 首次分配 / tiling 缓存填充（这些都不能发生在捕获里）
         # 2) 让 caching allocator 把内存块准备好
         for _ in range(warmup):
-            fla_fwd(self.q, self.k, self.v, causal=causal)
+            call(self.q, self.k, self.v, causal)
         torch.npu.synchronize()
 
         # ---- ② 捕获 ----
-        # 捕获期间：不能有 .item()/print(tensor)/synchronize()/依赖 tensor 值的分支
-        #           fla_fwd 里这两条都满足 ✓
+        # 捕获期间不能有 .item() / print(tensor) / synchronize() / 依赖 tensor 值的分支
         self.g = torch.npu.NPUGraph()
         try:
             with torch.npu.graph(self.g):
-                self.o, self.lse = fla_fwd(self.q, self.k, self.v, causal=causal)
+                self._out = call(self.q, self.k, self.v, causal)
         except Exception as e:                       # noqa: BLE001
-            print(f"[capture 失败] {type(e).__name__}: {e}")
-            print("→ 试试 capture_begin/capture_end 写法（见文件末尾注释）")
+            print(f"[capture 失败{(' ' + label) if label else ''}] {type(e).__name__}: {e}")
+            print("  → 若是 OpCommand 与图捕获冲突，用 -DFAT_NO_OPCOMMAND=ON 重新构建 .so")
+            print("  → 或改用显式 capture_begin/capture_end（见文件末尾注释）")
             raise
         torch.npu.synchronize()
-        print(f"[capture ok] O={tuple(self.o.shape)} L={tuple(self.lse.shape)}")
+        print(f"[capture ok{(' ' + label) if label else ''}] "
+              f"O={tuple(self.o.shape)} causal={causal}")
+
+    @property
+    def o(self):
+        return self._out[0] if isinstance(self._out, (tuple, list)) else self._out
+
+    @property
+    def lse(self):
+        return self._out[1] if isinstance(self._out, (tuple, list)) and len(self._out) > 1 else None
 
     def replay_only(self):
         """连输入拷贝都不做 —— 纯 replay 的地板价"""
@@ -74,6 +88,15 @@ class GraphedFLA:
         self.v.copy_(v)
         self.g.replay()
         return self.o
+
+
+class GraphedFLA(GraphedFA):
+    """Triton 的 fla_fwd 专用包装（保持原接口）"""
+
+    def __init__(self, B, N, H, D, causal=True, warmup=3):
+        super().__init__(B, N, H, D,
+                         call=lambda q, k, v, c: fla_fwd(q, k, v, causal=c),
+                         causal=causal, warmup=warmup, label="triton")
 
 
 def bench(fn, warmup=10, iters=50, repeats=5):

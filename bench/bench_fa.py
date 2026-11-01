@@ -221,8 +221,8 @@ def main():
     ap.add_argument(
         "--graph",
         action="store_true",
-        help="对 triton 后端启用图捕获（消除 Python launcher 开销；"
-        "只在 device < 0.42ms 时有收益，N<=1024）",
+        help="对 triton / catlass 后端启用图捕获（消除 host launcher 开销）。"
+        "catlass 若捕获失败，用 -DFAT_NO_OPCOMMAND=ON 重建 .so",
     )
     ap.add_argument(
         "--graph-copy",
@@ -305,11 +305,16 @@ def main():
             for name, fn in backends.items():
                 tag_g = ""
                 gf = None
-                if args.graph and name == "triton":
+                if args.graph and name in ("triton", "catlass"):
                     sys.path.insert(0, HERE)
-                    from graph_fa import GraphedFLA  # noqa: PLC0415
+                    from graph_fa import GraphedFA  # noqa: PLC0415
 
-                    gf = GraphedFLA(batch, n, heads, d, causal=causal)
+                    # call(q,k,v,causal) —— 与 bench_fa 的 backend 签名一致；
+                    # 闭包里固定 block_dim 默认值，避免捕获时依赖外部变量
+                    _fn = fn
+                    gf = GraphedFA(batch, n, heads, d,
+                                   call=lambda a, b, c, cc: _fn(a, b, c, cc),
+                                   causal=causal, label=name)
                     if args.graph_copy:
                         call = lambda: gf(q, k, v)  # 图 + 输入拷贝（真实口径）
                         tag_g = " [图+拷贝]"
