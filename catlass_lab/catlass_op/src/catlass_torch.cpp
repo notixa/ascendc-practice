@@ -163,7 +163,7 @@ static constexpr int64_t B_K = 128;
 
 at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
                const at::Tensor& mask, double scale, int64_t batch, int64_t blockDim,
-               int64_t stream_handle)
+               int64_t stream_handle, bool causal)
 {
     // ---------------- 1. 基础校验 ----------------
     TORCH_CHECK(q.device().type() == c10::DeviceType::PrivateUse1, "q must be on NPU");
@@ -178,7 +178,7 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     // mask：1 = 屏蔽（上三角，diagonal=1），0 = 保留；dtype 必须 2 字节
     // 源码里 epilogue 用 (maskStride - columnNum) * 2 和 columnNum * 2 硬编码 2 字节，
     // 且列起点恒为 0（表须对齐对角块起点），故这里只校验 shape/stride/dtype。
-    TORCH_CHECK(mask.defined(), "mask tensor is required (this kernel is causal)");
+    TORCH_CHECK(mask.defined(), "mask tensor is required (128x128 相对 mask；full 模式传全 0)");
     TORCH_CHECK(mask.device().type() == c10::DeviceType::PrivateUse1, "mask must be on NPU");
     TORCH_CHECK(mask.device() == q.device(), "mask must be on the same device as q");
     TORCH_CHECK(mask.scalar_type() == at::kHalf, "mask must be float16 (2 bytes)");
@@ -246,9 +246,9 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     hostTiling.batch_num = static_cast<uint32_t>(batch);
     hostTiling.numTask   = static_cast<uint32_t>(numTask);
     hostTiling.scale     = static_cast<float>(scale);
-    // torch 路径暂时只支持 causal（mask 是必传参数，语义即 causal）。
-    // 要支持全注意力，需要给 op 增加一个 causal 参数并从 Python 透传。
-    hostTiling.causal    = 1u;
+    // causal 由 Python 侧显式传入（op schema 的最后一个参数）。
+    // 之前这里写死 1u → torch 路径的 "full" 实际按 causal 算，结果全错（max_err ~0.8~1.1）。
+    hostTiling.causal    = causal ? 1u : 0u;
 
     // FATTiling 是 POD：用 from_blob 借 host 内存 → to(device) 走 torch 的 H2D 拷贝
     at::Tensor tilingDev;
@@ -340,7 +340,7 @@ at::Tensor fat(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
 
 TORCH_LIBRARY(catlass, m)
 {
-    m.def("fat(Tensor q, Tensor k, Tensor v, Tensor mask, float scale, int batch, int blockDim, int stream=0) -> Tensor");
+    m.def("fat(Tensor q, Tensor k, Tensor v, Tensor mask, float scale, int batch, int blockDim, int stream=0, bool causal=True) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(catlass, PrivateUse1, m)

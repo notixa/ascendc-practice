@@ -77,6 +77,7 @@ def make_catlass(so_path):
             0,
             block_dim,
             st,
+            bool(causal),
         )
 
     return run
