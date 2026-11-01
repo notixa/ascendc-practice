@@ -12,9 +12,7 @@ import triton.backends.ascend.runtime
 
 _BQ, _BK = 64, 256
 
-@triton.autotune(configs=[triton.Config({"BLOCK_Q": _BQ, "BLOCK_K": _BK, "multibuffer": mb})
-    for mb in (False, True)
-], key=["N_q", "N_k", "IS_CAUSAL"],)
+@triton.autotune(configs=[triton.Config({"BLOCK_Q": _BQ, "BLOCK_K": _BK})], key=["N_q", "N_k", "IS_CAUSAL"],)
 @triton.jit
 def fla_fwd_kernel(
     q_ptr,
