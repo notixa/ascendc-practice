@@ -26,8 +26,6 @@ import torch
 import torch_npu
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "triton_lab"))
-from kernels.flash_attention.fa_fwd import fla_fwd  # noqa: E402
 
 
 class GraphedFA:
@@ -94,6 +92,13 @@ class GraphedFLA(GraphedFA):
     """Triton 的 fla_fwd 专用包装（保持原接口）"""
 
     def __init__(self, B, N, H, D, causal=True, warmup=3):
+        # 惰性 import：只有真用 Triton 时才需要 triton_lab 在 sys.path 上。
+        # 否则 --only catlass --graph 也会因为顶层 import 而失败。
+        tl = os.path.join(os.path.dirname(HERE), "triton_lab")
+        if tl not in sys.path:
+            sys.path.insert(0, tl)
+        from kernels.flash_attention.fa_fwd import fla_fwd  # noqa: PLC0415
+
         super().__init__(B, N, H, D,
                          call=lambda q, k, v, c: fla_fwd(q, k, v, causal=c),
                          causal=causal, warmup=warmup, label="triton")
