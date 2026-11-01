@@ -69,3 +69,8 @@ mindstudio_profiler_*
 *.db
 *.db-*
 .uv-cache/
+
+# msprof 采集产物（体积大，不入库）
+fat_prof_AB_*.tgz
+fa_prof/
+fat_prof_AB_*/
