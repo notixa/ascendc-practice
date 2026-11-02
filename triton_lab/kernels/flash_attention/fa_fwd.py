@@ -12,11 +12,16 @@ import triton.backends.ascend.runtime
 import triton.language as tl
 from torch_npu.npu import get_device_properties
 
-# 注意：BKV=256 在 N 不能被 256 整除时（如 S=1000）会触发
-# "load2d 写地址越界" 的 aicore 异常（507015），尾块修复前不要加回来。
+# 注意：BKV=256 在 N 不能被 256 整除时会触发
+# "load2d 写地址越界" 的 aicore 异常（507015），尾块修复前用 _prune_bk256 按形状屏蔽。
 # 32x256 已实测崩溃；64x256 在 S=1000 编译 UB 超限。
 _TILES = [
-    (128, 128),
+    # (128, 128) 已移除：两段拆分后每段各有一份 k/v 内联副本，UB 从 192KB
+    # 涨到需要 323.6KB（1.68x 超限），在 N=4096 上 bishengir 直接 ub overflow。
+    # 且这个 config 一旦编译失败，Ascend autotuner 会把【整批】判成
+    # "No valid triton configs. NoneType: None"，掩盖真实错误。
+    # 想单独验证请用 FAT_TILES=128x128。
+    (64, 256),   # ★ N_k 能被 256 整除时启用（实测比 96x128 快 18%）
     (96, 128),
     (64, 128),
     (32, 128),
@@ -36,9 +41,21 @@ if _env_tiles:
     del _bq, _bk
 
 
+def _prune_bk256(configs, named_args, **kwargs):
+    """BK=256 的尾块 bug 未修（N 非整除时 aicore 507015），按 N_k 屏蔽。
+
+    N_k 不可用时保守去掉 BK=256 —— 正确性优先于速度。
+    """
+    n_k = named_args.get("N_k")
+    if n_k is not None and n_k % 256 == 0:
+        return configs
+    return [c for c in configs if c.kwargs.get("BLOCK_K") != 256]
+
+
 @triton.autotune(
     configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES],
     key=["N_q", "N_k", "IS_CAUSAL"],
+    prune_configs_by={"early_config_prune": _prune_bk256},
 )
 @triton.jit
 def fla_fwd_kernel(
