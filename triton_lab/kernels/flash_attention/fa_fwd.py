@@ -246,14 +246,14 @@ def fla_fwd_kernel_inner_loop(
         if EVEN_K:
             k = tl.load(k_block_ptr)
             v = tl.load(v_block_ptr)
-            s = tl.dot(q, tl.trans(k), out_dtype=tl.float16)
+            s = tl.dot(q, tl.trans(k)).to(tl.float16)
         else:
             k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
             v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
             k_offsets = j + tl.arange(0, BLOCK_K)
             s = tl.where(
                 k_offsets[None, :] < N_k,
-                tl.dot(q, tl.trans(k), out_dtype=tl.float16),
+                tl.dot(q, tl.trans(k)).to(tl.float16),
                 -6.0e4,
             )
 
