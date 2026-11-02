@@ -19,7 +19,7 @@ _TILES = [
     (32, 256),
 ]
 
-@triton.autotune(configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES], key=["N_q", "N_k", "IS_CAUSAL", "HEAD_DIM"],)
+@triton.autotune(configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES], key=["N_q", "N_k", "IS_CAUSAL"],)
 @triton.jit
 def fla_fwd_kernel(
     q_ptr,
