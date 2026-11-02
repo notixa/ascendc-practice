@@ -21,7 +21,7 @@ _TILES = [
     # 且这个 config 一旦编译失败，Ascend autotuner 会把【整批】判成
     # "No valid triton configs. NoneType: None"，掩盖真实错误。
     # 想单独验证请用 FAT_TILES=128x128。
-    (64, 256),   # ★ N_k 能被 256 整除时启用（实测比 96x128 快 18%）
+    (64, 256),  # ★ N_k 能被 256 整除时启用（实测比 96x128 快 18%）
     (96, 128),
     (64, 128),
     (32, 128),
@@ -37,7 +37,9 @@ if _env_tiles:
     _TILES = [tuple(int(v) for v in t.split("x")) for t in _env_tiles.split(",") if t]
     for _bq, _bk in _TILES:
         if _bq <= 0 or _bk <= 0:
-            raise ValueError(f"FAT_TILES 格式错误: {_env_tiles!r}（应为 96x128,64x128）")
+            raise ValueError(
+                f"FAT_TILES 格式错误: {_env_tiles!r}（应为 96x128,64x128）"
+            )
     del _bq, _bk
 
 
@@ -244,21 +246,24 @@ def fla_fwd_kernel_inner_loop(
         if EVEN_K:
             k = tl.load(k_block_ptr)
             v = tl.load(v_block_ptr)
-            s = tl.dot(q, tl.trans(k))
+            s = tl.dot(q, tl.trans(k), out_dtype=tl.float16)
         else:
             k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
             v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
             k_offsets = j + tl.arange(0, BLOCK_K)
-            s = tl.where(k_offsets[None, :] < N_k, tl.dot(q, tl.trans(k)), -1.0e6)
+            s = tl.where(
+                k_offsets[None, :] < N_k,
+                tl.dot(q, tl.trans(k), out_dtype=tl.float16),
+                -6.0e4,
+            )
 
         if IS_DIAG:
             q_idx = q_start_r + tl.arange(0, BLOCK_Q)
             k_idx = j + tl.arange(0, BLOCK_K)
-            s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
+            s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -6.0e4)
         m_prev = mi
         mi = tl.maximum(m_prev, tl.max(s, axis=-1))
-        s = tl.exp2(s - mi[:, None].to(v.dtype))
-        s = s.to(tl.float16)
+        s = tl.exp2(s - mi[:, None].to(tl.float16))
         factor = tl.exp2(m_prev - mi)
         acc = factor[:, None] * acc
         acc = tl.dot(s, v, acc)
