@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     import triton
     from fa_precision_gate import DTYPE_MAP, _max_rel, reference_attention
     from torch_npu.npu import get_device_properties
+    from triton.compiler.errors import MLIRCompilationError
 
     from kernels.flash_attention.fa_fwd import fla_fwd_kernel
 
@@ -112,42 +113,47 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
-    raw_kernel[grid](
-        q,
-        k,
-        v,
-        o,
-        l,
-        q.stride(0),
-        q.stride(1),
-        q.stride(2),
-        q.stride(3),
-        k.stride(0),
-        k.stride(1),
-        k.stride(2),
-        k.stride(3),
-        v.stride(0),
-        v.stride(1),
-        v.stride(2),
-        v.stride(3),
-        o.stride(0),
-        o.stride(1),
-        o.stride(2),
-        o.stride(3),
-        l.stride(0),
-        l.stride(1),
-        l.stride(2),
-        args.batch,
-        args.heads,
-        scale,
-        N_q=sq,
-        N_k=sk,
-        delta_qk=sk - sq,
-        HEAD_DIM=hd,
-        IS_CAUSAL=causal,
-        BLOCK_Q=bq,
-        BLOCK_K=bk,
-    )
+    try:
+        raw_kernel[grid](
+            q,
+            k,
+            v,
+            o,
+            l,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            q.stride(3),
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            k.stride(3),
+            v.stride(0),
+            v.stride(1),
+            v.stride(2),
+            v.stride(3),
+            o.stride(0),
+            o.stride(1),
+            o.stride(2),
+            o.stride(3),
+            l.stride(0),
+            l.stride(1),
+            l.stride(2),
+            args.batch,
+            args.heads,
+            scale,
+            N_q=sq,
+            N_k=sk,
+            delta_qk=sk - sq,
+            HEAD_DIM=hd,
+            IS_CAUSAL=causal,
+            BLOCK_Q=bq,
+            BLOCK_K=bk,
+        )
+    except MLIRCompilationError as exc:
+        first = str(exc).strip().splitlines()
+        print("[COMPILE_FAIL] " + (first[0] if first else "MLIRCompilationError"))
+        return 3
     torch.npu.synchronize()
     print("kernel done", flush=True)
 
