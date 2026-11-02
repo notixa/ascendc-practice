@@ -40,7 +40,12 @@ if _env_tiles:
             raise ValueError(
                 f"FAT_TILES 格式错误: {_env_tiles!r}（应为 96x128,64x128）"
             )
-    del _bq, _bk
+
+# 调试用：循环展开因子。AIC 有 55.5% 的时间在跑标量（循环控制 + 地址计算），
+# 展开循环能让每份工作量只付一次循环控制开销。
+#   FA_UNROLL=1（默认，不展开） / 2 / 4
+_UNROLL = int(os.environ.get("FA_UNROLL", "1"))
+del _bq, _bk
 
 
 def _pick_tile(n_q, n_k):
@@ -242,7 +247,7 @@ def fla_fwd_kernel_inner_loop(
 ):
     k_block_ptr = tl.advance(k_block_ptr, (lower_bound, 0))
     v_block_ptr = tl.advance(v_block_ptr, (lower_bound, 0))
-    for j in range(lower_bound, upper_bound, BLOCK_K):
+    for j in tl.range(lower_bound, upper_bound, BLOCK_K, loop_unroll_factor=_UNROLL):
         if EVEN_K:
             k = tl.load(k_block_ptr)
             v = tl.load(v_block_ptr)
