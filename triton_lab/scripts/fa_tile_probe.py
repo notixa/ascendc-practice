@@ -33,7 +33,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--seq", type=int, default=1000, help="S_q = S_k")
     parser.add_argument("--dtype", choices=["fp16", "bf16"], default="fp16")
-    parser.add_argument("--causal", action="store_true")
+    parser.add_argument(
+        "--causal", choices=["0", "1"], default="0", help="0=非 causal, 1=causal"
+    )
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--heads", type=int, default=2)
     parser.add_argument("--head-dim", type=int, default=128)
@@ -48,6 +50,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    causal = args.causal == "1"
 
     try:
         import torch
@@ -105,8 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     grid = (min(args.batch * args.heads * triton.cdiv(sq, bq), cores),)
 
     print(
-        f"BQ={bq} BK={bk} seq={sq} causal={int(args.causal)} "
-        f"dtype={args.dtype} grid={grid}",
+        f"BQ={bq} BK={bk} seq={sq} causal={int(causal)} dtype={args.dtype} grid={grid}",
         flush=True,
     )
 
@@ -142,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         N_k=sk,
         delta_qk=sk - sq,
         HEAD_DIM=hd,
-        IS_CAUSAL=args.causal,
+        IS_CAUSAL=causal,
         BLOCK_Q=bq,
         BLOCK_K=bk,
     )
@@ -152,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_check:
         return 0
 
-    o_ref, lse_ref = reference_attention(torch, q, k, v, args.causal, scale)
+    o_ref, lse_ref = reference_attention(torch, q, k, v, causal, scale)
     torch.npu.synchronize()
 
     o_kf = o.permute(0, 2, 1, 3).float()
