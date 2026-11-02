@@ -45,7 +45,6 @@ if _env_tiles:
 # 展开循环能让每份工作量只付一次循环控制开销。
 #   FA_UNROLL=1（默认，不展开） / 2 / 4
 _UNROLL = int(os.environ.get("FA_UNROLL", "1"))
-del _bq, _bk
 
 
 def _pick_tile(n_q, n_k):
