@@ -10,13 +10,15 @@ import triton.language as tl
 from torch_npu.npu import get_device_properties
 import triton.backends.ascend.runtime
 
+# 注意：BKV=256 在 N 不能被 256 整除时（如 S=1000）会触发
+# "load2d 写地址越界" 的 aicore 异常（507015），尾块修复前不要加回来。
+# 32x256 已实测崩溃；64x256 在 S=1000 编译 UB 超限。
 _TILES = [
-    (96, 128),    # 旧基线，做对照
-    (64, 256),    # 上一轮最优，做对照
-    (128, 256),   # ★ fp16-s 带来的新组合（面积 ×2，迭代数减半）
     (128, 128),
+    (96, 128),
     (64, 128),
-    (32, 256),
+    (32, 128),
+    (32, 64),
 ]
 
 @triton.autotune(configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES], key=["N_q", "N_k", "IS_CAUSAL"],)
