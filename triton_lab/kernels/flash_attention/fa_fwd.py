@@ -6,9 +6,9 @@
 import torch
 import torch_npu
 import triton
+import triton.backends.ascend.runtime
 import triton.language as tl
 from torch_npu.npu import get_device_properties
-import triton.backends.ascend.runtime
 
 # 注意：BKV=256 在 N 不能被 256 整除时（如 S=1000）会触发
 # "load2d 写地址越界" 的 aicore 异常（507015），尾块修复前不要加回来。
@@ -21,7 +21,11 @@ _TILES = [
     (32, 64),
 ]
 
-@triton.autotune(configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES], key=["N_q", "N_k", "IS_CAUSAL"],)
+
+@triton.autotune(
+    configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES],
+    key=["N_q", "N_k", "IS_CAUSAL"],
+)
 @triton.jit
 def fla_fwd_kernel(
     q_ptr,
@@ -51,9 +55,9 @@ def fla_fwd_kernel(
     batch,
     head,
     scale,
-    N_q:tl.constexpr,
-    N_k:tl.constexpr,
-    delta_qk:tl.constexpr,
+    N_q: tl.constexpr,
+    N_k: tl.constexpr,
+    delta_qk: tl.constexpr,
     BLOCK_Q: tl.constexpr,
     BLOCK_K: tl.constexpr,
     HEAD_DIM: tl.constexpr,
@@ -61,7 +65,6 @@ def fla_fwd_kernel(
 ):
     EVEN_Q = N_q % BLOCK_Q == 0
     EVEN_K = N_k % BLOCK_K == 0
-    MULTI_BLOCK = (N_k + BLOCK_K - 1) // BLOCK_K > 1
     blocks_q = tl.cdiv(N_q, BLOCK_Q)
     taskNum = batch * head * blocks_q
     taskIdx = tl.program_id(0)
@@ -115,61 +118,115 @@ def fla_fwd_kernel(
             block_shape=(BLOCK_K, HEAD_DIM),
             order=(1, 0),
         )
-        m = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
-        l = tl.zeros([BLOCK_Q], dtype=tl.float32)
-        o = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
-        T_k_full = tl.cdiv(N_k, BLOCK_K)
-        if IS_CAUSAL:
-            T_k = tl.minimum(tl.cdiv((i + 1) * BLOCK_Q + delta_qk, BLOCK_K), T_k_full)
-        else:
-            T_k = T_k_full
+        mi = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
+        li = tl.zeros([BLOCK_Q], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
+        
         if EVEN_Q:
             q = tl.load(q_block_ptr)
         else:
             q = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
         q = (q * scale).to(q_ptr.dtype.element_ty)
-        for j in tl.range(0, T_k, num_stages=1, loop_unroll_factor=1):
-            if EVEN_K:
-                k = tl.load(k_block_ptr)
-                v = tl.load(v_block_ptr)
-                s = tl.dot(q, tl.trans(k)).to(v.dtype)
-            else:
-                k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                s = tl.dot(q, tl.trans(k)).to(v.dtype)
-                k_offsets = j * BLOCK_K + tl.arange(0, BLOCK_K)
-                s = tl.where(k_offsets[None, :] < N_k, s, -float("inf"))
-            if IS_CAUSAL:
-                q_idx = i * BLOCK_Q + tl.arange(0, BLOCK_Q)
-                k_idx = j * BLOCK_K + tl.arange(0, BLOCK_K)
-                s = tl.where(
-                    k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -float("inf")
-                )
-            m_prev = m
-            row_max = tl.max(s, axis=-1).to(tl.float32)
-            if MULTI_BLOCK:
-                m = tl.maximum(
-                    m_prev, row_max, propagate_nan=tl.PropagateNan.ALL
-                )
-            else:
-                m = tl.maximum(m_prev, row_max)
-            s = tl.exp(s - m[:, None].to(v.dtype))
-            factor = tl.exp(m_prev - m)
-            l = factor * l + tl.sum(s.to(tl.float32), axis=-1)
-            o = factor[:, None] * o
-            o = tl.dot(s, v, o)
-            k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
-            v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
 
-        o = o / l[:, None]
-        l = m + tl.log(l)
+        no_mask_end = (i * BLOCK_Q if IS_CAUSAL else N_k) + delta_qk
+        no_mask_block_num = no_mask_end // BLOCK_K
+        no_mask_upper = no_mask_block_num * BLOCK_K if IS_CAUSAL else N_k
+
+        q_start_r = i * BLOCK_Q
+
+        acc, li, mi = fla_fwd_kernel_inner_loop(
+            acc,
+            li,
+            mi,
+            q,
+            k_block_ptr,
+            v_block_ptr,
+            q_start_r,
+            0,
+            no_mask_upper,
+            N_k,
+            delta_qk,
+            BLOCK_Q=BLOCK_Q,
+            BLOCK_K=BLOCK_K,
+            EVEN_K=EVEN_K,
+            IS_DIAG=False,
+        )
+
+        if IS_CAUSAL:
+            visible_end = tl.minimum(N_q, (i + 1) * BLOCK_Q) + delta_qk
+            acc, li, mi = fla_fwd_kernel_inner_loop(
+                acc,
+                li,
+                mi,
+                q,
+                k_block_ptr,
+                v_block_ptr,
+                q_start_r,
+                no_mask_upper,
+                visible_end,
+                N_k,
+                delta_qk,
+                BLOCK_Q=BLOCK_Q,
+                BLOCK_K=BLOCK_K,
+                EVEN_K=EVEN_K,
+                IS_DIAG=True,
+            )
+
+        acc = acc / li[:, None]
+        li = (mi + tl.log2(li)) * 0.6931471805599453
         if EVEN_Q:
-            tl.store(o_block_ptr, o.to(o_ptr.dtype.element_ty))
-            tl.store(l_block_ptr, l)
+            tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty))
+            tl.store(l_block_ptr, li)
         else:
-            tl.store(o_block_ptr, o.to(o_ptr.dtype.element_ty), boundary_check=(0, 1))
-            tl.store(l_block_ptr, l, boundary_check=(0,))
+            tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty), boundary_check=(0, 1))
+            tl.store(l_block_ptr, li, boundary_check=(0,))
+
+
+@triton.jit
+def fla_fwd_kernel_inner_loop(
+    acc,
+    li,
+    mi,
+    q,
+    k_block_ptr,
+    v_block_ptr,
+    q_start_r,
+    lower_bound,
+    upper_bound,
+    N_k,
+    delta_qk,
+    BLOCK_Q: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    EVEN_K: tl.constexpr,
+    IS_DIAG: tl.constexpr,
+):
+    for j in range(lower_bound, upper_bound, BLOCK_K):
+        if EVEN_K:
+            k = tl.load(k_block_ptr)
+            v = tl.load(v_block_ptr)
+            s = tl.dot(q, tl.trans(k))
+        else:
+            k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+            v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
+            k_offsets = j + tl.arange(0, BLOCK_K)
+            s = tl.where(k_offsets[None, :] < N_k, tl.dot(q, tl.trans(k)), -1.0e6)
+
+        if IS_DIAG:
+            q_idx = q_start_r + tl.arange(0, BLOCK_Q)
+            k_idx = j + tl.arange(0, BLOCK_K)
+            s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
+        m_prev = mi
+        mi = tl.maximum(m_prev, tl.max(s, axis=-1))
+        s = tl.exp2(s - mi[:, None].to(v.dtype))
+        s = s.to(tl.float16)
+        factor = tl.exp2(m_prev - mi)
+        acc = factor[:, None] * acc
+        acc = tl.dot(s, v, acc)
+        li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
+        k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
+        v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
+    return acc, li, mi
 
 
 def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
@@ -184,7 +241,8 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     O = torch.zeros_like(Q, device=Q.device)
     L = torch.zeros([batch, head, N_q], dtype=torch.float32, device=Q.device)
 
-    scale = head_dim**-0.5
+    LOG2E = 1.4426950408889634
+    scale = head_dim**-0.5 * LOG2E
 
     # 带 tl.dot 的 kernel 用 AI Core 数；纯 Vector 算子用 vector_core_num
     cores = get_device_properties(0).cube_core_num
