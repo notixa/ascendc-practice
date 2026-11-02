@@ -129,7 +129,7 @@ def fla_fwd_kernel(
             q = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
         q = (q * scale).to(q_ptr.dtype.element_ty)
-        for j in range(T_k):
+        for j in tl.range(0, T_k, num_stages=1, loop_unroll_factor=1):
             if EVEN_K:
                 k = tl.load(k_block_ptr)
                 v = tl.load(v_block_ptr)
