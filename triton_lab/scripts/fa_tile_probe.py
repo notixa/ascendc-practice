@@ -142,7 +142,6 @@ def main(argv: list[str] | None = None) -> int:
             args.batch,
             args.heads,
             scale,
-            sk,
             N_q=sq,
             N_k=sk,
             delta_qk=sk - sq,
