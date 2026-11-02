@@ -44,7 +44,9 @@ if _env_tiles:
 # 调试用：循环展开因子。AIC 有 55.5% 的时间在跑标量（循环控制 + 地址计算），
 # 展开循环能让每份工作量只付一次循环控制开销。
 #   FA_UNROLL=1（默认，不展开） / 2 / 4
-_UNROLL = int(os.environ.get("FA_UNROLL", "1"))
+# 注意：@triton.jit 函数只能读取【标注为 tl.constexpr】的模块全局变量，
+#       否则报 "Cannot access global variable ... from within @jit'ed function"。
+_UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
 
 
 def _pick_tile(n_q, n_k):
