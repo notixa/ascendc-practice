@@ -121,7 +121,7 @@ def fla_fwd_kernel(
         mi = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
         li = tl.zeros([BLOCK_Q], dtype=tl.float32)
         acc = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
-        
+
         if EVEN_Q:
             q = tl.load(q_block_ptr)
         else:
@@ -201,6 +201,8 @@ def fla_fwd_kernel_inner_loop(
     EVEN_K: tl.constexpr,
     IS_DIAG: tl.constexpr,
 ):
+    k_block_ptr = tl.advance(k_block_ptr, (lower_bound, 0))
+    v_block_ptr = tl.advance(v_block_ptr, (lower_bound, 0))
     for j in range(lower_bound, upper_bound, BLOCK_K):
         if EVEN_K:
             k = tl.load(k_block_ptr)
