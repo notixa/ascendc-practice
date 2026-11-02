@@ -41,22 +41,28 @@ if _env_tiles:
     del _bq, _bk
 
 
-def _prune_bk256(configs, named_args, **kwargs):
-    """BK=256 的尾块 bug 未修（N 非整除时 aicore 507015），按 N_k 屏蔽。
+def _pick_tile(n_q, n_k):
+    """host 侧手工选 tile（不用 autotune）。
 
-    N_k 不可用时保守去掉 BK=256 —— 正确性优先于速度。
+    为什么不用 @triton.autotune：Ascend 的 autotuner 在批量 benchmark 多个
+    config 时会静默丢掉需要更多 UB 的 config。实测 (64,256) 直调 4.146ms /
+    33.2 TFLOPS，但放进 autotune 候选后必然丢失（先报 "No valid triton
+    configs. NoneType: None"，单 config 时报 IndexError），最终只剩 (96,128)
+    4.908ms / 28.0 TFLOPS —— 白丢 18%。
+    MindSpeed 的 FA 也不用 autotune，同样用手写常数/手写选择器。
+
+    FAT_TILES 环境变量仍可强制覆盖整个表，取第一个。
     """
-    n_k = named_args.get("N_k")
-    if n_k is not None and n_k % 256 == 0:
-        return configs
-    return [c for c in configs if c.kwargs.get("BLOCK_K") != 256]
+    if _env_tiles:
+        return _TILES[0]
+
+    # (64,256)：一次迭代覆盖 256 列 KV，实测在整除形状上最快。
+    # BKV=256 的尾块 bug 未修（N 非整除时 aicore 507015），所以只在整除时使用。
+    if n_k % 256 == 0:
+        return 64, 256
+    return 96, 128
 
 
-@triton.autotune(
-    configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES],
-    key=["N_q", "N_k", "IS_CAUSAL"],
-    prune_configs_by={"early_config_prune": _prune_bk256},
-)
 @triton.jit
 def fla_fwd_kernel(
     q_ptr,
@@ -282,7 +288,8 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
 
     delta_qk = N_k - N_q
 
-    grid = lambda meta: (min(batch * head * triton.cdiv(N_q, meta["BLOCK_Q"]), cores),)
+    BLOCK_Q, BLOCK_K = _pick_tile(N_q, N_k)
+    grid = (min(batch * head * triton.cdiv(N_q, BLOCK_Q), cores),)
     fla_fwd_kernel[grid](
         Q,
         K,
@@ -314,6 +321,8 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         N_q=N_q,
         N_k=N_k,
         delta_qk=delta_qk,
+        BLOCK_Q=BLOCK_Q,
+        BLOCK_K=BLOCK_K,
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
     )
