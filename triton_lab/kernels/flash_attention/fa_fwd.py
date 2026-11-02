@@ -3,6 +3,8 @@
 # 2) tl.constexpr 是给 Triton 编译器看的标记，运行时就是 int/bool，
 #    pyright 会把它当成独立类型，误报“实参与 constexpr 不兼容”。
 
+import os
+
 import torch
 import torch_npu
 import triton
@@ -20,6 +22,18 @@ _TILES = [
     (32, 128),
     (32, 64),
 ]
+
+# 调试用：FAT_TILES 覆盖候选列表，避免为了隔离问题反复改代码。
+#   FAT_TILES=96x128              -> 单 config（拿完整 traceback）
+#   FAT_TILES=96x128,64x128       -> 指定若干 config
+#   FAT_TILES=64x256,128x128      -> 重新试被注释掉的 tile
+_env_tiles = os.environ.get("FAT_TILES")
+if _env_tiles:
+    _TILES = [tuple(int(v) for v in t.split("x")) for t in _env_tiles.split(",") if t]
+    for _bq, _bk in _TILES:
+        if _bq <= 0 or _bk <= 0:
+            raise ValueError(f"FAT_TILES 格式错误: {_env_tiles!r}（应为 96x128,64x128）")
+    del _bq, _bk
 
 
 @triton.autotune(
