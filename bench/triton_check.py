@@ -104,11 +104,14 @@ def main():
     ap.add_argument("--perf", action="store_true", help="额外跑 N=4096 H=32 的性能")
     args = ap.parse_args()
 
-    print("[correctness]")
-    results = [check_one(*c) for c in CASES]
-
+    # 性能必须先测：正确性 case 会编译+执行 6 种不同的 constexpr 特化，
+    # 之后设备状态（频率/L2/HBM 页）已非冷态 —— 实测会虚高 16%
+    # （4.177 冷进程 vs 4.862 在正确性 case 之后）。
     if args.perf:
         perf()
+
+    print("\n[correctness]")
+    results = [check_one(*c) for c in CASES]
 
     n_fail = results.count(False)
     print(f"\n{len(results) - n_fail}/{len(results)} passed")
