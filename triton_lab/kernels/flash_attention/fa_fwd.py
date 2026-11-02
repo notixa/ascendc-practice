@@ -213,7 +213,7 @@ def fla_fwd_kernel(
             )
 
         acc = acc / li[:, None]
-        li = (mi + tl.log2(li)) * 0.6931471805599453
+        li = mi + tl.log2(li)
         if EVEN_Q:
             tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty))
             tl.store(l_block_ptr, li)
@@ -263,8 +263,8 @@ def fla_fwd_kernel_inner_loop(
             s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -6.0e4)
         m_prev = mi
         mi = tl.maximum(m_prev, tl.max(s, axis=-1))
-        s = tl.exp2(s - mi[:, None].to(tl.float16))
-        factor = tl.exp2(m_prev - mi)
+        s = tl.exp(s - mi[:, None].to(tl.float16))
+        factor = tl.exp(m_prev - mi)
         acc = factor[:, None] * acc
         acc = tl.dot(s, v, acc)
         li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
@@ -285,8 +285,7 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     O = torch.zeros_like(Q, device=Q.device)
     L = torch.zeros([batch, head, N_q], dtype=torch.float32, device=Q.device)
 
-    LOG2E = 1.4426950408889634
-    scale = head_dim**-0.5 * LOG2E
+    scale = head_dim**-0.5
 
     # 带 tl.dot 的 kernel 用 AI Core 数；纯 Vector 算子用 vector_core_num
     cores = get_device_properties(0).cube_core_num
