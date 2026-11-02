@@ -101,39 +101,51 @@ def main():
 
     d = 128
     n = args.n
-    q = torch.randn(args.bq * d, dtype=torch.float16, device="npu")
     k = torch.randn(n * d, dtype=torch.float16, device="npu")
     v = torch.randn(n * d, dtype=torch.float16, device="npu")
-    o = torch.zeros(args.bq * d, dtype=torch.float16, device="npu")
 
-    print(f"\ntile = ({args.bq}, {args.bk})   N_k = {n}   split = {args.split} 个 tile")
-    res = {}
-    for tag, kern in (("1-loop", _fa_one_loop), ("2-loop", _fa_two_loop)):
-        bits, info = probe(kern, q, k, v, o, n, args.split, args.bq, args.bk, d)
-        res[tag] = bits
-        if bits is None:
-            print(f"  {tag:<8} {info}")
-        else:
-            print(f"  {tag:<8} requires {bits:>9,} bits = {bits / 8 / 1024:>8.1f} KB")
-
-    a, b = res["1-loop"], res["2-loop"]
-    print()
-    if isinstance(a, int) and isinstance(b, int):
-        d_bits = b - a
-        print(f"  Δ(2-loop − 1-loop) = {d_bits:+,} bits = {d_bits / 8 / 1024:+.1f} KB")
-        one_kv = args.bk * d * 2 * 2          # k + v 各一份 fp16 tile
-        print(f"  一个 k/v 副本 = {one_kv / 1024:.1f} KB"
-              f" ⇒ Δ 相当于 {d_bits / 8 / one_kv:+.2f} 份")
-        print()
-        if abs(d_bits) < one_kv * 8 * 0.1:
-            print("  ⇒ 结论：两段循环几乎不额外占 UB —— 段1 的 k/v 被段2 复用了，")
-            print("           「拆段吃掉 UB」这个假设不成立。")
-        elif d_bits > 0:
-            print("  ⇒ 结论：两段循环确实多吃了约一份 k/v —— 段1 的 buffer 没被复用。")
-        else:
-            print("  ⇒ 反常：两段反而更省，需要看 IR 才能解释。")
+    # 自动升级 tile，直到两个变体都报出 UB 数字（即都溢出）
+    if args.bq and args.bk and (args.bq, args.bk) != (0, 0):
+        tiles = [(args.bq, args.bk)] + [
+            t for t in [(128, 256), (128, 512), (256, 256), (256, 512), (512, 256)]
+            if t != (args.bq, args.bk)
+        ]
     else:
-        print("  （有一个变体没拿到 UB 数字，无法比较 —— 可能是它编过了）")
+        tiles = [(128, 128), (128, 256), (128, 512), (256, 256), (256, 512), (512, 256)]
+
+    for bq, bk in tiles:
+        q = torch.randn(bq * d, dtype=torch.float16, device="npu")
+        o = torch.zeros(bq * d, dtype=torch.float16, device="npu")
+        print(f"\n{'=' * 62}\ntile = ({bq}, {bk})   N_k = {n}   split = {args.split} 个 tile\n{'=' * 62}")
+        res = {}
+        for tag, kern in (("1-loop", _fa_one_loop), ("2-loop", _fa_two_loop)):
+            bits, info = probe(kern, q, k, v, o, n, args.split, bq, bk, d)
+            res[tag] = bits
+            if bits is None:
+                print(f"  {tag:<8} {info}")
+            else:
+                print(f"  {tag:<8} requires {bits:>9,} bits = {bits / 8 / 1024:>8.1f} KB")
+
+        a, b = res["1-loop"], res["2-loop"]
+        if isinstance(a, int) and isinstance(b, int):
+            d_bits = b - a
+            one_kv = bk * d * 2 * 2          # k + v 各一份 fp16 tile
+            print(f"\n  Δ(2-loop − 1-loop) = {d_bits:+,} bits = {d_bits / 8 / 1024:+.1f} KB")
+            print(f"  一个 k/v 副本 = {one_kv / 1024:.1f} KB"
+                  f" ⇒ Δ 相当于 {d_bits / 8 / one_kv:+.2f} 份")
+            if abs(d_bits) < one_kv * 8 * 0.1:
+                print("  ⇒ 结论：两段循环几乎不额外占 UB —— 段1 的 k/v 被段2 复用了，")
+                print("           「拆段吃掉 UB」这个假设不成立。")
+            elif d_bits > 0:
+                print("  ⇒ 结论：两段循环确实多吃了约一份 k/v —— 段1 的 buffer 没被复用。")
+            else:
+                print("  ⇒ 反常：两段反而更省，需要看 IR 才能解释。")
+            return
+
+        if isinstance(a, int) or isinstance(b, int):
+            print("\n  （只有一个变体溢出，另一个编过了 —— 差值不严格可比，继续升 tile）")
+
+    print("\n所有 tile 都没能同时让两个变体溢出，请手动指定更大的 --bq/--bk")
 
 
 if __name__ == "__main__":
