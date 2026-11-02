@@ -55,8 +55,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--head-dim",
         type=int,
         nargs="+",
-        default=[64, 128],
-        help="head_dim 列表（默认 64 128）",
+        default=[128],
+        help="head_dim 列表（默认只测 128；要测 64 显式传 --head-dim 64）",
     )
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--heads", type=int, default=2)
