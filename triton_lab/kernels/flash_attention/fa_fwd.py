@@ -51,6 +51,7 @@ def fla_fwd_kernel(
     batch,
     head,
     scale,
+    n_k_rt,
     N_q:tl.constexpr,
     N_k:tl.constexpr,
     delta_qk:tl.constexpr,
@@ -118,7 +119,7 @@ def fla_fwd_kernel(
         m = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
         l = tl.zeros([BLOCK_Q], dtype=tl.float32)
         o = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
-        T_k_full = tl.cdiv(N_k, BLOCK_K)
+        T_k_full = tl.cdiv(n_k_rt, BLOCK_K)
         if IS_CAUSAL:
             T_k = tl.minimum(tl.cdiv((i + 1) * BLOCK_Q + delta_qk, BLOCK_K), T_k_full)
         else:
@@ -220,6 +221,7 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         batch,
         head,
         scale,
+        N_k,
         N_q=N_q,
         N_k=N_k,
         delta_qk=delta_qk,
