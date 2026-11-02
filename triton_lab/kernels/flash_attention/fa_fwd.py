@@ -17,11 +17,9 @@ _TILES = [
     (128, 128),
     (64, 128),
     (32, 256),
-    (64, 512),    # 长打：L1 大概会爆 → compile_failed 不影响其它候选
-    (128, 512),   # 长打
 ]
 
-@triton.autotune(configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES], key=["N_q", "N_k", "IS_CAUSAL"],)
+@triton.autotune(configs=[triton.Config({"BLOCK_Q": bq, "BLOCK_K": bk}) for bq, bk in _TILES], key=["N_q", "N_k", "IS_CAUSAL", "HEAD_DIM"],)
 @triton.jit
 def fla_fwd_kernel(
     q_ptr,
@@ -133,11 +131,11 @@ def fla_fwd_kernel(
             if EVEN_K:
                 k = tl.load(k_block_ptr)
                 v = tl.load(v_block_ptr)
-                s = tl.dot(q, tl.trans(k)).to(tl.float16)
+                s = tl.dot(q, tl.trans(k)).to(v.dtype)
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                s = tl.dot(q, tl.trans(k)).to(tl.float16)
+                s = tl.dot(q, tl.trans(k)).to(v.dtype)
                 k_offsets = j * BLOCK_K + tl.arange(0, BLOCK_K)
                 s = tl.where(k_offsets[None, :] < N_k, s, -float("inf"))
             if IS_CAUSAL:
@@ -147,13 +145,14 @@ def fla_fwd_kernel(
                     k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -float("inf")
                 )
             m_prev = m
+            row_max = tl.max(s, axis=-1).to(tl.float32)
             if MULTI_BLOCK:
                 m = tl.maximum(
-                    m_prev, tl.max(s, axis=-1), propagate_nan=tl.PropagateNan.ALL
-                ).to(m.dtype)
+                    m_prev, row_max, propagate_nan=tl.PropagateNan.ALL
+                )
             else:
-                m = tl.maximum(m_prev, tl.max(s, axis=-1)).to(m.dtype)
-            s = tl.exp((s - m[:, None].to(tl.float16)).to(tl.float16))
+                m = tl.maximum(m_prev, row_max)
+            s = tl.exp(s - m[:, None].to(v.dtype))
             factor = tl.exp(m_prev - m)
             l = factor * l + tl.sum(s.to(tl.float32), axis=-1)
             o = factor[:, None] * o

@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         f"device=npu:{args.device} cases={total} "
         f"atol={args.atol} rtol={args.rtol} check_lse={not args.no_lse}"
     )
-    print("首次调用会触发 autotune（每个 key 8 组配置），耗时会明显高于后续 case")
+    print("首次调用会触发 autotune（每个 key 若干组配置），耗时会明显高于后续 case")
     print("-" * 100)
 
     for idx, (sq, sk, hd, causal, dtype_name) in enumerate(cases, 1):
