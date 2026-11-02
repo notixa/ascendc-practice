@@ -166,7 +166,7 @@ def fla_fwd_kernel(
         else:
             q = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
-        q = (q * scale).to(q_ptr.dtype.element_ty)
+        q = q * scale.to(tl.float16)
 
         no_mask_end = (i * BLOCK_Q if IS_CAUSAL else N_k) + delta_qk
         no_mask_block_num = no_mask_end // BLOCK_K
