@@ -30,71 +30,15 @@ BK = 256
 STACK = 4
 SW = BK * STACK          # 1024 列 / 轮
 
-KERNELS = r'''
-import triton
-import triton.language as tl
-
-
-@triton.jit
-def k_hold(q_ptr, k_ptr, ws_ptr, o_ptr, N,
-           BLOCK_Q: tl.constexpr, BK: tl.constexpr, DIM: tl.constexpr):
-    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * DIM
-                + tl.arange(0, DIM)[None, :])
-    acc = tl.zeros([BLOCK_Q], tl.float32)
-    for base in range(0, N, 4 * BK):
-        k0 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 0 * BK, 0), (BK, DIM), (1, 0)))
-        k1 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 1 * BK, 0), (BK, DIM), (1, 0)))
-        k2 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 2 * BK, 0), (BK, DIM), (1, 0)))
-        k3 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 3 * BK, 0), (BK, DIM), (1, 0)))
-        s0 = tl.dot(q, tl.trans(k0))
-        s1 = tl.dot(q, tl.trans(k1))
-        s2 = tl.dot(q, tl.trans(k2))
-        s3 = tl.dot(q, tl.trans(k3))
-        # 四个 s 同时存活到这里
-        acc += tl.max(tl.maximum(tl.maximum(s0, s1), tl.maximum(s2, s3)), -1)
-    tl.store(o_ptr + tl.arange(0, BLOCK_Q), acc)
-
-
-@triton.jit
-def k_spill(q_ptr, k_ptr, ws_ptr, o_ptr, N,
-            BLOCK_Q: tl.constexpr, BK: tl.constexpr, DIM: tl.constexpr):
-    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * DIM
-                + tl.arange(0, DIM)[None, :])
-    acc = tl.zeros([BLOCK_Q], tl.float32)
-    pid = tl.program_id(0)
-    row = tl.arange(0, BLOCK_Q)[:, None]
-    col = tl.arange(0, BK)[None, :]
-    slot = pid * (4 * BLOCK_Q * BK)
-    for base in range(0, N, 4 * BK):
-        # ---- 阶段 1：每个 dot 之后立刻落盘，s_i 的生命周期在此终止 ----
-        k0 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 0 * BK, 0), (BK, DIM), (1, 0)))
-        tl.store(ws_ptr + slot + 0 * BLOCK_Q * BK + row * BK + col, tl.dot(q, tl.trans(k0)))
-        k1 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 1 * BK, 0), (BK, DIM), (1, 0)))
-        tl.store(ws_ptr + slot + 1 * BLOCK_Q * BK + row * BK + col, tl.dot(q, tl.trans(k1)))
-        k2 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 2 * BK, 0), (BK, DIM), (1, 0)))
-        tl.store(ws_ptr + slot + 2 * BLOCK_Q * BK + row * BK + col, tl.dot(q, tl.trans(k2)))
-        k3 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 3 * BK, 0), (BK, DIM), (1, 0)))
-        tl.store(ws_ptr + slot + 3 * BLOCK_Q * BK + row * BK + col, tl.dot(q, tl.trans(k3)))
-
-        # ---- 阶段 2：逐块读回，UB 里同时只有 1 份 s ----
-        t0 = tl.load(ws_ptr + slot + 0 * BLOCK_Q * BK + row * BK + col)
-        t1 = tl.load(ws_ptr + slot + 1 * BLOCK_Q * BK + row * BK + col)
-        t2 = tl.load(ws_ptr + slot + 2 * BLOCK_Q * BK + row * BK + col)
-        t3 = tl.load(ws_ptr + slot + 3 * BLOCK_Q * BK + row * BK + col)
-        mi = tl.maximum(tl.maximum(tl.max(t0, -1), tl.max(t1, -1)),
-                        tl.maximum(tl.max(t2, -1), tl.max(t3, -1)))
-        acc += mi
-    tl.store(o_ptr + tl.arange(0, BLOCK_Q), acc)
-'''
 
 
 def run_child(tag, which):
     import torch          # noqa: PLC0415
     import torch_npu      # noqa: E402,F401
 
-    ns = {}
-    exec(compile(KERNELS, "<probe>", "exec"), ns)          # noqa: S102
-    kern = ns[which]
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _ws_spill_kernels import k_hold, k_spill          # noqa: PLC0415
+    kern = k_hold if which == "k_hold" else k_spill
     q = torch.randn(BQ * D, dtype=torch.float16, device="npu")
     k = torch.randn(4096 * D, dtype=torch.float16, device="npu")
     o = torch.zeros(BQ, dtype=torch.float32, device="npu")
