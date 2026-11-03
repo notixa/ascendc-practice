@@ -174,10 +174,6 @@ def fla_fwd_kernel(
 
         q = q * scale.to(tl.float16)
 
-        no_mask_end = (i * BLOCK_Q if IS_CAUSAL else N_k) + delta_qk
-        no_mask_block_num = no_mask_end // BLOCK_K
-        no_mask_upper = no_mask_block_num * BLOCK_K if IS_CAUSAL else N_k
-
         q_start_r = i * BLOCK_Q
 
         acc, li, mi = fla_fwd_kernel_inner_loop(
@@ -188,38 +184,16 @@ def fla_fwd_kernel(
             k_block_ptr,
             v_block_ptr,
             q_start_r,
-            0,
-            no_mask_upper,
             N_k,
             delta_qk,
             BLOCK_Q=BLOCK_Q,
             BLOCK_K=BLOCK_K,
             EVEN_K=EVEN_K,
-            IS_DIAG=False,
+            IS_CAUSAL=IS_CAUSAL,
         )
 
-        if IS_CAUSAL:
-            visible_end = tl.minimum(N_q, (i + 1) * BLOCK_Q) + delta_qk
-            acc, li, mi = fla_fwd_kernel_inner_loop(
-                acc,
-                li,
-                mi,
-                q,
-                k_block_ptr,
-                v_block_ptr,
-                q_start_r,
-                no_mask_upper,
-                visible_end,
-                N_k,
-                delta_qk,
-                BLOCK_Q=BLOCK_Q,
-                BLOCK_K=BLOCK_K,
-                EVEN_K=EVEN_K,
-                IS_DIAG=True,
-            )
-
         acc = acc / li[:, None]
-        li = mi + tl.log2(li)
+        li = mi + tl.log(li)
         if EVEN_Q:
             tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty))
             tl.store(l_block_ptr, li)
@@ -237,18 +211,18 @@ def fla_fwd_kernel_inner_loop(
     k_block_ptr,
     v_block_ptr,
     q_start_r,
-    lower_bound,
-    upper_bound,
     N_k,
     delta_qk,
     BLOCK_Q: tl.constexpr,
     BLOCK_K: tl.constexpr,
     EVEN_K: tl.constexpr,
-    IS_DIAG: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
 ):
-    k_block_ptr = tl.advance(k_block_ptr, (lower_bound, 0))
-    v_block_ptr = tl.advance(v_block_ptr, (lower_bound, 0))
-    for j in tl.range(lower_bound, upper_bound, BLOCK_K, loop_unroll_factor=_UNROLL):
+    end = N_k
+    if IS_CAUSAL:
+        end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
+    for j in tl.range(0, end, BLOCK_K, loop_unroll_factor=_UNROLL):
+        IS_DIAG = j + BLOCK_K - 1 >= q_start_r + delta_qk
         if EVEN_K:
             k = tl.load(k_block_ptr)
             v = tl.load(v_block_ptr)
@@ -263,7 +237,7 @@ def fla_fwd_kernel_inner_loop(
                 -1.0e6,
             )
 
-        if IS_DIAG:
+        if IS_CAUSAL and IS_DIAG:
             q_idx = q_start_r + tl.arange(0, BLOCK_Q)
             k_idx = j + tl.arange(0, BLOCK_K)
             s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
