@@ -74,3 +74,5 @@ mindstudio_profiler_*
 fat_prof_AB_*.tgz
 fa_prof/
 fat_prof_AB_*/
+.scratch/
+.triton-cache/
