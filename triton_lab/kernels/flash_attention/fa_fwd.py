@@ -12,7 +12,19 @@ import triton.backends.ascend.runtime
 import triton.language as tl
 from torch_npu.npu import get_device_properties
 
-_STACK_NUM = 4
+# 调试用：STACK 批处理宽度 —— 每轮一次性处理 STACK_NUM 个 BLOCK_K 块。
+#   FA_STACK=1   -> 每轮 1 个块（每轮固定开销最高）
+#   FA_STACK=2/4 -> 每轮 2/4 个块（摊薄每轮固定的同步/循环/rescale 开销）
+#
+# 注意：
+#   1. @triton.jit 只能读取【标注为 tl.constexpr】的模块全局变量，否则报
+#      "Cannot access global variable ... from within @jit'ed function"；
+#   2. host 侧（torch.empty 的 shape）需要普通 Python int，不能传 constexpr 对象。
+#   ⇒ 所以这里同时给出两个名字，值来自同一个环境变量。
+_STACK = int(os.environ.get("FA_STACK", "4"))
+if _STACK <= 0:
+    raise ValueError(f"FA_STACK 必须是正整数，当前 {_STACK!r}")
+_STACK_NUM: tl.constexpr = _STACK
 
 # 注意：BKV=256 在 N 不能被 256 整除时会触发
 # "load2d 写地址越界" 的 aicore 异常（507015），尾块修复前用 _prune_bk256 按形状屏蔽。
@@ -319,9 +331,9 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
 
     grid = (min(batch * head * triton.cdiv(N_q, BLOCK_Q), cores),)
     n_progs = int(grid[0])
-    S = torch.empty([n_progs, BLOCK_Q, BLOCK_K * _STACK_NUM], device=Q.device)
+    S = torch.empty([n_progs, BLOCK_Q, BLOCK_K * _STACK], device=Q.device)
     P = torch.empty(
-        [n_progs, BLOCK_Q, BLOCK_K * _STACK_NUM], device=Q.device, dtype=torch.float16
+        [n_progs, BLOCK_Q, BLOCK_K * _STACK], device=Q.device, dtype=torch.float16
     )
 
     fla_fwd_kernel[grid](
