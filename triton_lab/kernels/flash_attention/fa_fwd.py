@@ -190,7 +190,7 @@ def fla_fwd_kernel(
 
             offset_base = base + tl.arange(0, BLOCK_K)
 
-            k_ptr = tl.make_block_ptr(
+            k_block_ptr = tl.make_block_ptr(
                 k_base,
                 (N_k, HEAD_DIM),
                 strides=(stride_kk, stride_kd),
@@ -198,7 +198,7 @@ def fla_fwd_kernel(
                 block_shape=(BLOCK_K, HEAD_DIM),
                 order=(1, 0),
             )
-            v_ptr = tl.make_block_ptr(
+            v_block_ptr = tl.make_block_ptr(
                 v_base,
                 (N_k, HEAD_DIM),
                 strides=(stride_vk, stride_vd),
@@ -227,17 +227,17 @@ def fla_fwd_kernel(
             # ---- 阶段 1：连续发射 4 个 QK^T（AIC 侧聚类，中间不夹 Vector 算子）----
             if EVEN_ST:
                 for si in range(STACK_NUM):
-                    k = tl.load(k_ptr)
+                    k = tl.load(k_block_ptr)
                     s_cube = tl.dot(q, tl.trans(k))
                     tl.store(s_block_ptr, s_cube)
-                    k_ptr = tl.advance(k_ptr, (BLOCK_K, 0))
+                    k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
                     s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
             else:
                 for si in range(STACK_NUM):
-                    k = tl.load(k_ptr, boundary_check=(0, 1), padding_option="zero")
+                    k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
                     s_cube = tl.dot(q, tl.trans(k))
                     tl.store(s_block_ptr, s_cube)
-                    k_ptr = tl.advance(k_ptr, (BLOCK_K, 0))
+                    k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
                     s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
 
             s_block_ptr = ori_s_block_ptr
@@ -292,17 +292,17 @@ def fla_fwd_kernel(
             if EVEN_ST:
                 for si in range(STACK_NUM):
                     p_cube = tl.load(p_block_ptr)
-                    v = tl.load(v_ptr)
+                    v = tl.load(v_block_ptr)
                     acc = tl.dot(p_cube, v, acc)
                     p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
-                    v_ptr = tl.advance(v_ptr, (BLOCK_K, 0))
+                    v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
             else:
                 for si in range(STACK_NUM):
                     p_cube = tl.load(p_block_ptr)
-                    v = tl.load(v_ptr, boundary_check=(0, 1), padding_option="zero")
+                    v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
                     acc = tl.dot(p_cube, v, acc)
                     p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
-                    v_ptr = tl.advance(v_ptr, (BLOCK_K, 0))
+                    v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
 
         acc = acc / li[:, None]
         if EVEN_Q:
