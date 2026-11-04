@@ -79,6 +79,13 @@ def _refresh_launch_from_env() -> dict:
         "set_workspace_multibuffer": ("FA_WSMB", int),
         "limit_auto_multi_buffer_only_for_local_buffer": ("FA_LAMB", lambda v: v != "0"),
         "inject_barrier_all": ("FA_IBA", lambda v: v != "0"),
+        # CV-pipelining 的两个官方总开关（都是正规 NPUOptions 字段）
+        #   FA_PRELOAD=1 -> --enable-preload=true  即 skew/preload 模式（PreLaunch）
+        #   FA_DCP=1     -> enable_dynamic_cv_pipeline（Triton 侧 pass，
+        #                   内部自动配好 set_workspace_multibuffer=0 /
+        #                   enable_mixed_cv=True / disable_auto_inject_block_sync=True）
+        "enable_preload": ("FA_PRELOAD", lambda v: v != "0"),
+        "enable_dynamic_cv_pipeline": ("FA_DCP", lambda v: v != "0"),
     }
     for key, (env, conv) in env_map.items():
         raw = os.environ.get(env)

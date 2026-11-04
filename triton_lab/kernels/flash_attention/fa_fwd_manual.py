@@ -51,6 +51,35 @@ if _env_tiles:
 _UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
 
 
+# ---------------------------------------------------------------------------
+# launch 级调参（直接改这个 dict，或走环境变量）
+#   FA_PRELOAD=1 -> enable_preload=True            即 --enable-preload（skew/CV-pipelining）
+#   FA_DCP=1     -> enable_dynamic_cv_pipeline     Triton 侧 dynamic CV pipeline pass
+#   FA_IBA=1     -> inject_barrier_all             （同步问题诊断用）
+# 注意：enable_dynamic_cv_pipeline 内部会设 set_workspace_multibuffer=0，
+#       与显式 num_stages / multibuffer_mode 可能互斥。
+# ---------------------------------------------------------------------------
+_LAUNCH: dict = {}
+
+
+def _refresh_launch_from_env() -> dict:
+    """按环境变量填充 _LAUNCH（扫描脚本可直接改 dict，不走 env）。"""
+    _LAUNCH.clear()
+    env_map = {
+        "enable_preload": ("FA_PRELOAD", lambda v: v != "0"),
+        "enable_dynamic_cv_pipeline": ("FA_DCP", lambda v: v != "0"),
+        "inject_barrier_all": ("FA_IBA", lambda v: v != "0"),
+    }
+    for key, (env, conv) in env_map.items():
+        raw = os.environ.get(env)
+        if raw is not None and raw != "":
+            _LAUNCH[key] = conv(raw)
+    return _LAUNCH
+
+
+_refresh_launch_from_env()
+
+
 def _pick_tile(n_q, n_k):
     """host 侧手工选 tile（不用 autotune）。
 
@@ -358,5 +387,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         # 必须用编译期常量（BLOCK_SUB_Q 要当 block_shape / tl.arange 参数）。
         # FA_NVEC=1 可关掉切分（用于隔离"切分"和"显式 GM"两个变量）。
         NVEC=int(os.environ.get("FA_NVEC", "2")),
+        **_LAUNCH,
     )
     return O
