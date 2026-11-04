@@ -85,9 +85,14 @@ def k_mix(q_ptr, o_ptr, BLOCK_Q: tl.constexpr, NVEC: tl.constexpr, D: tl.constex
     tl.store(o_ptr + row_lo + tl.arange(0, BLOCK_SUB_Q), tl.max(sub, axis=-1))
 
 
-def run(fn, args, out_shape):
+def run(fn, pre, post, out_shape):
+    """pre: 输出指针之前的实参；post: 输出指针之后的实参（constexpr）。
+
+    注意参数顺序：k_mix 的签名是 (q_ptr, o_ptr, ...)，输出指针在【第二个】位置，
+    所以用 pre/post 分开传，避免上一次那种整体错位一位的 bug。
+    """
     o = torch.full(out_shape, -1.0, dtype=torch.float32, device="npu")
-    fn[(GRID,)](*args, o)
+    fn[(GRID,)](*pre, o, *post)
     torch.npu.synchronize()
     return o.cpu()
 
@@ -98,13 +103,13 @@ def main():
     print(f"{'='*84}\n", flush=True)
 
     # ① row_lo 到底是什么
-    ids = run(k_id, [BLOCK_Q, NVEC], (GRID,)).flatten()
+    ids = run(k_id, [], [BLOCK_Q, NVEC], (GRID,)).flatten()
     uniq = sorted(set(int(v) for v in ids.tolist()))
     print(f"① k_id: 每个核读到的 row_lo 唯一值 = {uniq}")
     print(f"   → {'✅ sub_vec_id 生效（出现 0 和 ' + str(SUB) + '）' if len(uniq) > 1 else '❌ **A 成立**：恒为 ' + str(uniq[0]) + '，纯 SSA kernel 里 sub_vec_id 不区分两个 AIV'}", flush=True)
 
     # ② 纯 vector + extract_slice
-    ov = run(k_vec, [BLOCK_Q, NVEC], (BLOCK_Q,)).flatten()
+    ov = run(k_vec, [], [BLOCK_Q, NVEC], (BLOCK_Q,)).flatten()
     written = [i for i in range(BLOCK_Q) if ov[i].item() >= 0]
     print(f"\n② k_vec: 被写的位置数 = {len(written)}/{BLOCK_Q}"
           f"  前 4 = {[round(ov[i].item(),1) for i in range(4)]}"
@@ -114,7 +119,7 @@ def main():
 
     # ③ mix（带 dot）
     q = torch.randn(BLOCK_Q, 128, dtype=torch.float16, device="npu")
-    om = run(k_mix, [q, BLOCK_Q, NVEC, 128], (BLOCK_Q,)).flatten()
+    om = run(k_mix, [q], [BLOCK_Q, NVEC, 128], (BLOCK_Q,)).flatten()
     written_m = [i for i in range(BLOCK_Q) if om[i].item() >= 0]
     print(f"\n③ k_mix: 被写的位置数 = {len(written_m)}/{BLOCK_Q}")
     print(f"   前 4 = {[round(om[i].item(),1) for i in range(4)]}"
