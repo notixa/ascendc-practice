@@ -166,31 +166,33 @@ def fla_fwd_kernel(
         end = N_k
         if IS_CAUSAL:
             end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
-        for j in tl.range(0, end, BLOCK_K, loop_unroll_factor=_UNROLL):
+        # q_idx 只依赖 q_start_r / BLOCK_Q，是循环不变量，提到循环外只算一次。
+        # 循环内原本每轮重算 1 条 [BLOCK_Q] 向量加法（N=4096 causal 时 17408 次）。
+        q_idx = q_start_r + tl.arange(0, BLOCK_Q)
+        for j in range(0, end, BLOCK_K):
             if EVEN_K:
                 k = tl.load(k_block_ptr)
                 v = tl.load(v_block_ptr)
-                s = tl.dot(q, tl.trans(k))
+                s = tl.dot(q, tl.trans(k)).to(tl.float16)
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 k_offsets = j + tl.arange(0, BLOCK_K)
                 s = tl.where(
                     k_offsets[None, :] < N_k,
-                    tl.dot(q, tl.trans(k)),
-                    -1.0e6,
+                    tl.dot(q, tl.trans(k)).to(tl.float16),
+                    -6.0e4,
                 )
 
             # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
             # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
             # 代价是每个 tile 都做一次 mask（实测 mask 成本 ≈ 0）。
             if IS_CAUSAL:
-                q_idx = q_start_r + tl.arange(0, BLOCK_Q)
                 k_idx = j + tl.arange(0, BLOCK_K)
-                s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
+                s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -6.0e4)
             m_prev = mi
             mi = tl.maximum(m_prev, tl.max(s, axis=-1))
-            s = tl.exp(s - mi[:, None].to(tl.float16)).to(tl.float16)
+            s = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
             factor = tl.exp(m_prev - mi)
             acc = factor[:, None] * acc
             acc = tl.dot(s, v, acc)
