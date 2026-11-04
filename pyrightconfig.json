@@ -2,21 +2,40 @@
   "typeCheckingMode": "standard",
   "reportUnreachable": false,
   "reportArgumentType": false,
-  // 本机（x86 编辑环境）没有 torch / torch_npu / triton-ascend，
+  // 本机（x86 编辑环境）没有 torch / torch_npu / triton-ascend 的完整安装，
   // 代码是在服务器上跑的。关掉缺失导入报错，避免满屏红波浪线。
   "reportMissingImports": "none",
   "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": "none",
   // 让 IDE 至少能找到仓库内的模块
   "extraPaths": [
     ".",
     "triton_lab",
     "bench",
-    "catlass_lab"
+    "catlass_lab",
+    "typings"
   ],
+  // ---- 为 triton-ascend 的低阶 API 补类型存根 ----
+  // 背景：triton 包里没有 py.typed，且 `triton._C.libtriton.ascend` 是编译好的
+  // .so（无 .pyi 存根），导致 `triton.language.extra.cann.extension` 与
+  // `triton.extension.buffer.language` 在 IDE 里退化成 Unknown、没有补全。
+  // 这里用 typings/ 提供**部分存根**，只声明实际用到的 API；运行时不受影响。
+  "stubPath": "typings",
+  // 若要让 pyright 直接分析项目内 venv（含 triton-ascend 3.6.0），取消下面两行注释。
+  // 注意 venvPath 是「包含 .venv 的那个目录」，venv 是目录名。
+  // "venvPath": "triton_lab",
+  // "venv": ".venv",
   "pythonVersion": "3.11",
   "exclude": [
     "**/build/**",
     "fa_prof/**",
-    "fat_prof_AB_*/**"
+    "fat_prof_AB_*/**",
+    "**/.venv",
+    "**/.triton-cache",
+    "**/.uv-cache",
+    "**/.scratch",
+    "**/dump_*",
+    "fa_op/**",
+    "sim/**"
   ]
 }
