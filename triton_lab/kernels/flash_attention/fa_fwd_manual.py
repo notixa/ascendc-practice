@@ -119,18 +119,21 @@ def fla_fwd_kernel(
     IS_CAUSAL: tl.constexpr,
     NVEC: tl.constexpr,
 ):
-    """手写 FA 前向：显式 GM workspace（S/P/OTmp）+ AIV 子核切分。
+    """手写 FA 前向：显式 GM workspace（S/P/OTmp）+ 可选的 AIV 子核切分。
 
     与官方 triton-ascend-kernels 的 `dsa_prefill.py` 同构：
-      cube:  s = q@k^T             -> 写 GM 的 S（全量）
-      vector(每子核半份): S -> mask/softmax -> 写 GM 的 P（半份）
-      cube:  otmp = P@v            -> 写 GM 的 OTmp（全量）
-      vector(每子核半份): OTmp -> rescale 累加到 acc（半份）-> 写 O（半份）
+      cube:   s = q@k^T          -> 写 GM 的 S（全量）
+      vector: S -> mask/softmax  -> 写 GM 的 P（本子核负责的行）
+      cube:   otmp = P@v         -> 写 GM 的 OTmp（全量）
+      vector: OTmp -> rescale 累加 -> 写 O（本子核负责的行）
 
-    不使用 al.scope / al.sync_block_*：那套在 Triton-Ascend 3.6.0 上，
-    手写 flag 会插在 bind-sub-block pass【之前】，两段仍按程序顺序执行，
-    双向等待必然死锁（已用 ttadapter IR 的 `func.func × 1` 证实）。
-    同步交给编译器的 injectBlockSync pass。
+    ⚠️ 所有 GM workspace 的访问都用 block_ptr，**绝不**提前构造二维索引张量。
+       一个 [BLOCK_Q, BLOCK_K] 的 int 索引张量在 UB 里就是 BLOCK_Q*BLOCK_K*4 B，
+       6 个这样的张量足以把 192 KB 的 UB 吃爆并触发大规模 spill（实测慢 32x）。
+
+    不使用 al.scope / al.sync_block_*：那套在 Triton-Ascend 3.6.0 上手写 flag
+    会插在 bind-sub-block pass 之前，两段仍按程序顺序执行，双向等待必然死锁
+    （已用 ttadapter IR 的 `func.func x 1` 证实）。同步交给 injectBlockSync pass。
     """
     EVEN_Q = N_q % BLOCK_Q == 0
     EVEN_K = N_k % BLOCK_K == 0
@@ -139,32 +142,16 @@ def fla_fwd_kernel(
     taskIdx = tl.program_id(0)
     coreNum = tl.num_programs(0)
 
-    # ------------------------------------------------------------------
-    # AIV 子核切分。910B3 是 1 AIC : 2 AIV，所以块的【行】方向切 NVEC 份。
-    # 必须硬编码成 constexpr：al.sub_vec_num() 是运行时值，不能做 tl.arange 上界。
-    # 官方 dsa_prefill.py 也是硬编码（BLOCK_SUB_G = BLOCK_G // 2）。
-    # ------------------------------------------------------------------
+    # AIV 子核切分（910B3 是 1 AIC : 2 AIV）。BLOCK_SUB_Q 必须是 constexpr：
+    # al.sub_vec_num() 是运行时值，不能做 tl.arange / block_shape 的参数。
     BLOCK_SUB_Q: tl.constexpr = BLOCK_Q // NVEC
-    sub_vec_id = al.sub_vec_id()
-    row_lo = sub_vec_id * BLOCK_SUB_Q  # 本子核首行（块内相对偏移）
-    rows_sub = row_lo + tl.arange(0, BLOCK_SUB_Q)  # [BLOCK_SUB_Q]
+    if NVEC == 1:
+        row_lo = 0
+    else:
+        row_lo = al.sub_vec_id() * BLOCK_SUB_Q
 
-    # 列/行索引常量（循环外构造一次）
-    cols_q = tl.arange(0, BLOCK_Q)  # [BLOCK_Q]
-    cols_k = tl.arange(0, BLOCK_K)  # [BLOCK_K]
-    cols_d = tl.arange(0, HEAD_DIM)  # [HEAD_DIM]
-
-    # GM workspace 的行/列偏移（只构造一次，循环内复用）
-    off_s_full = (
-        cols_q[:, None] * stride_sq + cols_k[None, :] * stride_sk
-    )  # [BLOCK_Q, BLOCK_K]
-    off_s_sub = (
-        rows_sub[:, None] * stride_sq + cols_k[None, :] * stride_sk
-    )  # [BLOCK_SUB_Q, BLOCK_K]
-    off_p_full = cols_q[:, None] * stride_pq + cols_k[None, :] * stride_pk
-    off_p_sub = rows_sub[:, None] * stride_pq + cols_k[None, :] * stride_pk
-    off_o_full = cols_q[:, None] * stride_otmp_q + cols_d[None, :] * stride_otmp_d
-    off_o_sub = rows_sub[:, None] * stride_otmp_q + cols_d[None, :] * stride_otmp_d
+    cols_k = tl.arange(0, BLOCK_K)
+    cols_d = tl.arange(0, HEAD_DIM)
 
     for task in range(taskIdx, taskNum, coreNum):
         b = task // (head * blocks_q)
@@ -184,33 +171,42 @@ def fla_fwd_kernel(
 
         q_start_r = i * BLOCK_Q
 
-        # q 需要全量（cube 的 q@k^T 按全 BLOCK_Q 行算）
+        # ── q / k / v：全量 tile，边界交给 boundary_check ──
         q_block_ptr = tl.make_block_ptr(
-            q_base,
-            (N_q, HEAD_DIM),
-            strides=(stride_qq, stride_qd),
-            offsets=(q_start_r, 0),
-            block_shape=(BLOCK_Q, HEAD_DIM),
-            order=(1, 0),
-        )
+            q_base, (N_q, HEAD_DIM), (stride_qq, stride_qd), (q_start_r, 0),
+            (BLOCK_Q, HEAD_DIM), (1, 0))
         k_block_ptr = tl.make_block_ptr(
-            k_base,
-            (N_k, HEAD_DIM),
-            strides=(stride_kk, stride_kd),
-            offsets=(0, 0),
-            block_shape=(BLOCK_K, HEAD_DIM),
-            order=(1, 0),
-        )
+            k_base, (N_k, HEAD_DIM), (stride_kk, stride_kd), (0, 0),
+            (BLOCK_K, HEAD_DIM), (1, 0))
         v_block_ptr = tl.make_block_ptr(
-            v_base,
-            (N_k, HEAD_DIM),
-            strides=(stride_vk, stride_vd),
-            offsets=(0, 0),
-            block_shape=(BLOCK_K, HEAD_DIM),
-            order=(1, 0),
-        )
+            v_base, (N_k, HEAD_DIM), (stride_vk, stride_vd), (0, 0),
+            (BLOCK_K, HEAD_DIM), (1, 0))
 
-        # 累积量全部按【半份】行 —— 与 vector 侧切分一致，两个子核各管自己那半
+        # ── S / P / OTmp：全量视图（cube 用）和本子核视图（vector 用）──
+        # 每轮 j 只是【覆盖写】同一块 workspace，行偏移固定，不需要 advance。
+        s_full = tl.make_block_ptr(
+            s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk), (0, 0),
+            (BLOCK_Q, BLOCK_K), (1, 0))
+        s_sub = tl.make_block_ptr(
+            s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk), (row_lo, 0),
+            (BLOCK_SUB_Q, BLOCK_K), (1, 0))
+        p_full = tl.make_block_ptr(
+            p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk), (0, 0),
+            (BLOCK_Q, BLOCK_K), (1, 0))
+        p_sub = tl.make_block_ptr(
+            p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk), (row_lo, 0),
+            (BLOCK_SUB_Q, BLOCK_K), (1, 0))
+        otmp_full = tl.make_block_ptr(
+            otmp_base, (BLOCK_Q, HEAD_DIM), (stride_otmp_q, stride_otmp_d), (0, 0),
+            (BLOCK_Q, HEAD_DIM), (1, 0))
+        otmp_sub = tl.make_block_ptr(
+            otmp_base, (BLOCK_Q, HEAD_DIM), (stride_otmp_q, stride_otmp_d), (row_lo, 0),
+            (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
+        o_sub = tl.make_block_ptr(
+            o_base, (N_q, HEAD_DIM), (stride_oq, stride_od), (q_start_r + row_lo, 0),
+            (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
+
+        # 累积量按本子核负责的行数分配
         mi = tl.full([BLOCK_SUB_Q], -1e38, dtype=tl.float32)
         li = tl.zeros([BLOCK_SUB_Q], dtype=tl.float32)
         acc = tl.zeros([BLOCK_SUB_Q, HEAD_DIM], dtype=tl.float32)
@@ -225,8 +221,8 @@ def fla_fwd_kernel(
         if IS_CAUSAL:
             end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
 
-        # 本子核负责的绝对行号（用于 causal mask 和输出写回）
-        q_idx_sub = q_start_r + rows_sub  # [BLOCK_SUB_Q]
+        # 本子核负责的绝对行号（causal mask 用）
+        q_idx_sub = q_start_r + row_lo + tl.arange(0, BLOCK_SUB_Q)
 
         for j in range(0, end, BLOCK_K):
             # ── cube: s = q @ k^T（全量）→ 写 GM 的 S ──
@@ -234,45 +230,42 @@ def fla_fwd_kernel(
                 k = tl.load(k_block_ptr)
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
-            tt = tl.dot(q, tl.trans(k)).to(tl.float16)  # [BLOCK_Q, BLOCK_K]
-            tl.store(s_base + off_s_full, tt)
+            tt = tl.dot(q, tl.trans(k)).to(tl.float16)
+            tl.store(s_full, tt)
 
-            # ── vector: 各读半份 S → mask / softmax → 写半份 P ──
-            s = tl.load(s_base + off_s_sub)  # [BLOCK_SUB_Q, BLOCK_K]
-            k_idx = j + cols_k  # [BLOCK_K]
+            # ── vector: 读本子核的行 → mask / softmax → 写回 P ──
+            s = tl.load(s_sub)
+            k_idx = j + cols_k
             if IS_CAUSAL:
                 s = tl.where(k_idx[None, :] <= q_idx_sub[:, None] + delta_qk, s, -6.0e4)
             if not EVEN_K:
                 s = tl.where(k_idx[None, :] < N_k, s, -6.0e4)
 
             m_prev = mi
-            mi = tl.maximum(m_prev, tl.max(s, axis=-1))  # [BLOCK_SUB_Q]
-            p_sub = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
-            tl.store(p_base + off_p_sub, p_sub)  # 半份写
+            mi = tl.maximum(m_prev, tl.max(s, axis=-1))
+            p = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
+            tl.store(p_sub, p)
 
-            factor = tl.exp(m_prev - mi)  # [BLOCK_SUB_Q]
+            factor = tl.exp(m_prev - mi)
             acc = factor[:, None] * acc
-            li = factor * li + tl.sum(p_sub.to(tl.float32), axis=-1)
+            li = factor * li + tl.sum(p.to(tl.float32), axis=-1)
 
-            # ── cube: otmp = P @ v（P 读全量，两个子核各写了一半）→ 写 GM 的 OTmp ──
-            p_full = tl.load(p_base + off_p_full)  # [BLOCK_Q, BLOCK_K]
+            # ── cube: otmp = P @ v（P 读全量）→ 写 GM 的 OTmp ──
+            pp = tl.load(p_full)
             if EVEN_K:
                 v = tl.load(v_block_ptr)
             else:
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-            otmp_full = tl.dot(p_full, v)  # [BLOCK_Q, HEAD_DIM]
-            tl.store(otmp_base + off_o_full, otmp_full)
+            tl.store(otmp_full, tl.dot(pp, v))
 
-            # ── vector: 各读半份 OTmp → 累加到半份 acc ──
-            acc += tl.load(otmp_base + off_o_sub)
+            # ── vector: 读本子核的 OTmp → 累加 ──
+            acc += tl.load(otmp_sub)
 
-        # ── 输出：半份写回 ──
         out = (acc / li[:, None]).to(o_ptr.dtype.element_ty)
-        o_off = q_idx_sub[:, None] * stride_oq + cols_d[None, :] * stride_od
         if EVEN_Q:
-            tl.store(o_base + o_off, out)
+            tl.store(o_sub, out)
         else:
-            tl.store(o_base + o_off, out, mask=q_idx_sub[:, None] < N_q)
+            tl.store(o_sub, out, boundary_check=(0, 1))
 
 
 def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
@@ -352,7 +345,8 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
         # 910B3 是 1 AIC : 2 AIV => vector 侧的块按行切 2 份。
-        # 必须用编译期常量（BLOCK_SUB_Q 要做 tl.arange 上界）。
-        NVEC=2,
+        # 必须用编译期常量（BLOCK_SUB_Q 要当 block_shape / tl.arange 参数）。
+        # FA_NVEC=1 可关掉切分（用于隔离"切分"和"显式 GM"两个变量）。
+        NVEC=int(os.environ.get("FA_NVEC", "2")),
     )
     return O
