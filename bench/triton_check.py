@@ -91,9 +91,12 @@ def perf():
 
     ms = bench(lambda: fla_fwd(q, q, q, causal=causal))
     flops = 4 * b * h * (n * (n + 1) / 2) * 128
+    # 注意：这里【只允许】打印 [perf] 这一行。
+    # 之前这里有过两行硬编码的历史对照文本（含 "4.838 ms" / "3.658 ms"），
+    # 结果 `grep -oE "[0-9]+\.[0-9]+ ms"` 会把它们抓进去，
+    # 让 5 次测量显示成"全是 3.658 ms、极差 0.0%"—— 纯属假数据。
+    # 要留历史数字请写进 README 或注释，不要 print 到 stdout。
     print(f"\n[perf] B{b} N{n} H{h} causal={causal}:  {ms:.3f} ms   {flops / (ms * 1e-3) / 1e12:.1f} TFLOPS")
-    print("       对照: (96,128) fp32-s = 4.838 ms / 28.4 | (64,256) = 4.098 / 33.5")
-    print("             (64,256)+fp16-s = 3.658 ms / 37.6 | CATLASS = 1.293 / 106.3")
 
 
 def main():
