@@ -49,6 +49,47 @@ if _env_tiles:
 _UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
 
 
+# ---------------------------------------------------------------------------
+# launch 级调参（官方 triton-ascend-kernels 仓库里【最高频】的调优手段）
+#
+#   官方使用频次：num_warps 25 次 / num_stages 18 次 / multibuffer 5 次
+#   而官方对 al.scope / al.sync_block_* / bl.alloc 的使用次数是【0】。
+#
+# 关键：这里的 num_stages 是【launch 级编译选项】，不是 tl.range(num_stages=)
+#       那个循环级参数 —— 后者实测无效（1/2/3/4 全在 3.87±0.01）。
+#       官方文档（docs/sources/best-practices/chunk_scaled_dot_kkt.md）明说：
+#         "multibuffer=True 是 NPU 侧的软件流水开关（类比 GPU 侧 num_stages
+#          的作用），把下一个 K 块的 GM→UB load 与当前块的 tl.dot 重叠，
+#          掩盖 load 时延。"
+#
+# _LAUNCH 是【可变 dict】：bench/tune_launch.py 直接改它做扫描，不用起子进程。
+# 也支持环境变量，方便手跑单个配置：
+#   FA_NW=8 FA_NS=3 FA_MB=1 python3 bench/triton_check.py --perf
+# ---------------------------------------------------------------------------
+_LAUNCH: dict = {}
+
+
+def _refresh_launch_from_env() -> dict:
+    """按环境变量填充 _LAUNCH（扫描脚本可直接改 dict，不走 env）。"""
+    _LAUNCH.clear()
+    env_map = {
+        "num_warps": ("FA_NW", int),
+        "num_stages": ("FA_NS", int),
+        "multibuffer": ("FA_MB", lambda v: v != "0"),
+        "set_workspace_multibuffer": ("FA_WSMB", int),
+        "limit_auto_multi_buffer_only_for_local_buffer": ("FA_LAMB", lambda v: v != "0"),
+        "inject_barrier_all": ("FA_IBA", lambda v: v != "0"),
+    }
+    for key, (env, conv) in env_map.items():
+        raw = os.environ.get(env)
+        if raw is not None and raw != "":
+            _LAUNCH[key] = conv(raw)
+    return _LAUNCH
+
+
+_refresh_launch_from_env()
+
+
 def _pick_tile(n_q, n_k):
     """host 侧手工选 tile（不用 autotune）。
 
@@ -258,5 +299,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         BLOCK_K=BLOCK_K,
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
+        **_LAUNCH,
     )
     return O
