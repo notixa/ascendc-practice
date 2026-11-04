@@ -228,15 +228,15 @@ def fla_fwd_kernel(
             if EVEN_ST:
                 for si in range(STACK_NUM):
                     k = tl.load(k_block_ptr)
-                    s_cube = tl.dot(q, tl.trans(k))
-                    tl.store(s_block_ptr, s_cube)
+                    # S 是 fp16：tl.store 不做隐式收窄，必须显式 .to()
+                    tl.store(s_block_ptr, tl.dot(q, tl.trans(k)).to(tl.float16))
                     k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
                     s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
             else:
                 for si in range(STACK_NUM):
                     k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                    s_cube = tl.dot(q, tl.trans(k))
-                    tl.store(s_block_ptr, s_cube)
+                    # S 是 fp16：tl.store 不做隐式收窄，必须显式 .to()
+                    tl.store(s_block_ptr, tl.dot(q, tl.trans(k)).to(tl.float16))
                     k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
                     s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
 
@@ -247,14 +247,14 @@ def fla_fwd_kernel(
                 s_vec = tl.load(s_block_ptr)
                 if not EVEN_ST:
                     s_vec = tl.where(
-                        (offset_base + si * BLOCK_K)[None, :] < N_k, s_vec, -1.0e6
+                        (offset_base + si * BLOCK_K)[None, :] < N_k, s_vec, -6.0e4
                     )
                 if IS_CAUSAL and IS_DIAG:
                     s_vec = tl.where(
                         (offset_base + si * BLOCK_K)[None, :]
                         <= q_idx[:, None] + delta_qk,
                         s_vec,
-                        -1.0e6,
+                        -6.0e4,
                     )
                 mi = tl.maximum(mi, tl.max(s_vec, -1))
                 s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
@@ -269,14 +269,14 @@ def fla_fwd_kernel(
                 s_vec = tl.load(s_block_ptr)
                 if not EVEN_ST:
                     s_vec = tl.where(
-                        (offset_base + si * BLOCK_K)[None, :] < N_k, s_vec, -1.0e6
+                        (offset_base + si * BLOCK_K)[None, :] < N_k, s_vec, -6.0e4
                     )
                 if IS_CAUSAL and IS_DIAG:
                     s_vec = tl.where(
                         (offset_base + si * BLOCK_K)[None, :]
                         <= q_idx[:, None] + delta_qk,
                         s_vec,
-                        -1.0e6,
+                        -6.0e4,
                     )
                 p_vec = tl.exp(s_vec - mi[:, None])
                 li = li + tl.sum(p_vec, -1)
@@ -333,7 +333,11 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
 
     grid = (min(batch * head * triton.cdiv(N_q, BLOCK_Q), cores),)
     n_progs = int(grid[0])
-    S = torch.empty([n_progs, BLOCK_Q, BLOCK_K * _STACK], device=Q.device)
+    # s 用 fp16 落盘：s 在本 kernel 里要过 3 段 GM（写1 + 读2），fp16 让这段流量
+    # 从 12 B/元素降到 6 B/元素，同时把 UB 里 s_vec 的占用减半。
+    S = torch.empty(
+        [n_progs, BLOCK_Q, BLOCK_K * _STACK], device=Q.device, dtype=torch.float16
+    )
     P = torch.empty(
         [n_progs, BLOCK_Q, BLOCK_K * _STACK], device=Q.device, dtype=torch.float16
     )
