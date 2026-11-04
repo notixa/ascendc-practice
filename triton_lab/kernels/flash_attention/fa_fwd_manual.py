@@ -121,19 +121,28 @@ def fla_fwd_kernel(
 ):
     """手写 FA 前向：显式 GM workspace（S/P/OTmp）+ 可选的 AIV 子核切分。
 
-    与官方 triton-ascend-kernels 的 `dsa_prefill.py` 同构：
+    数据流与官方 triton-ascend-kernels 的 `dsa_prefill.py` 同构：
       cube:   s = q@k^T          -> 写 GM 的 S（全量）
       vector: S -> mask/softmax  -> 写 GM 的 P（本子核负责的行）
       cube:   otmp = P@v         -> 写 GM 的 OTmp（全量）
       vector: OTmp -> rescale 累加 -> 写 O（本子核负责的行）
 
-    ⚠️ 所有 GM workspace 的访问都用 block_ptr，**绝不**提前构造二维索引张量。
-       一个 [BLOCK_Q, BLOCK_K] 的 int 索引张量在 UB 里就是 BLOCK_Q*BLOCK_K*4 B，
-       6 个这样的张量足以把 192 KB 的 UB 吃爆并触发大规模 spill（实测慢 32x）。
+    ── 三条硬性写法约束（都是被实测/官方代码验证过的）────────────────────
+    1. GM workspace 的访问必须用【普通指针 + 在调用点内联的二维广播】：
+           tl.load(p_base + rows_sub[:, None] * stride_pq
+                          + cols_k[None, :] * stride_pk)
+       原因：别名分析在 MLIR 层比较【仿射表达式】。一旦把二维偏移预计算成
+       张量变量，它就变成"未知张量值" => 无法判定同址 => 不插跨核同步 =>
+       读到旧值（实测 o_err ~ 0.9）；而且 [BLOCK_Q, BLOCK_K] 的 int 张量在
+       UB 里就是 64 KB 量级，6 个足以吃爆 192 KB 并触发大规模 spill。
+       一维索引张量（rows_sub / cols_k）可以预计算 —— 官方 arange_sub_G 也是。
 
-    不使用 al.scope / al.sync_block_*：那套在 Triton-Ascend 3.6.0 上手写 flag
-    会插在 bind-sub-block pass 之前，两段仍按程序顺序执行，双向等待必然死锁
-    （已用 ttadapter IR 的 `func.func x 1` 证实）。同步交给 injectBlockSync pass。
+    2. 不能用 tl.make_block_ptr 访问 S/P/OTmp：block_ptr 是不透明描述符，
+       别名分析看不到内部地址 => 同样丢同步（实测 o_err ~ 0.9）。
+
+    3. 不用 al.scope / al.sync_block_*：那套在 Triton-Ascend 3.6.0 上手写 flag
+       会插在 bind-sub-block pass 之前，两段仍按程序顺序执行，双向等待必然
+       死锁（已用 ttadapter IR 的 `func.func x 1` 证实）。同步交给 injectBlockSync。
     """
     EVEN_Q = N_q % BLOCK_Q == 0
     EVEN_K = N_k % BLOCK_K == 0
@@ -143,13 +152,17 @@ def fla_fwd_kernel(
     coreNum = tl.num_programs(0)
 
     # AIV 子核切分（910B3 是 1 AIC : 2 AIV）。BLOCK_SUB_Q 必须是 constexpr：
-    # al.sub_vec_num() 是运行时值，不能做 tl.arange / block_shape 的参数。
+    # al.sub_vec_num() 是运行时值，不能做 block_shape / tl.arange 的参数。
     BLOCK_SUB_Q: tl.constexpr = BLOCK_Q // NVEC
     if NVEC == 1:
         row_lo = 0
     else:
-        row_lo = al.sub_vec_id() * BLOCK_SUB_Q
+        # sub_vec_id() 返回 int64，转 int32 让地址算术保持 32 位
+        row_lo = (al.sub_vec_id() * BLOCK_SUB_Q).to(tl.int32)
 
+    # ── 一维索引张量：可以预计算（官方 arange_sub_G 同样预计算）──
+    rows_q = tl.arange(0, BLOCK_Q)
+    rows_sub = row_lo + tl.arange(0, BLOCK_SUB_Q)
     cols_k = tl.arange(0, BLOCK_K)
     cols_d = tl.arange(0, HEAD_DIM)
 
@@ -164,14 +177,14 @@ def fla_fwd_kernel(
         v_base = v_ptr + b * stride_vb + h * stride_vh
         o_base = o_ptr + b * stride_ob + h * stride_oh
 
-        # GM workspace 按【核】分区，避免 20 个核互相踩
+        # ── GM workspace 基址（标量，按核分区；标量预计算不影响别名分析）──
         s_base = s_ptr + taskIdx * stride_sc
         p_base = p_ptr + taskIdx * stride_pc
         otmp_base = otmp_ptr + taskIdx * stride_otmp_c
 
         q_start_r = i * BLOCK_Q
 
-        # ── q / k / v：全量 tile，边界交给 boundary_check ──
+        # q / k / v：只读输入，用 block_ptr 拿 boundary_check（不涉及别名问题）
         q_block_ptr = tl.make_block_ptr(
             q_base, (N_q, HEAD_DIM), (stride_qq, stride_qd), (q_start_r, 0),
             (BLOCK_Q, HEAD_DIM), (1, 0))
@@ -181,30 +194,6 @@ def fla_fwd_kernel(
         v_block_ptr = tl.make_block_ptr(
             v_base, (N_k, HEAD_DIM), (stride_vk, stride_vd), (0, 0),
             (BLOCK_K, HEAD_DIM), (1, 0))
-
-        # ── S / P / OTmp：全量视图（cube 用）和本子核视图（vector 用）──
-        # 每轮 j 只是【覆盖写】同一块 workspace，行偏移固定，不需要 advance。
-        s_full = tl.make_block_ptr(
-            s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk), (0, 0),
-            (BLOCK_Q, BLOCK_K), (1, 0))
-        s_sub = tl.make_block_ptr(
-            s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk), (row_lo, 0),
-            (BLOCK_SUB_Q, BLOCK_K), (1, 0))
-        p_full = tl.make_block_ptr(
-            p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk), (0, 0),
-            (BLOCK_Q, BLOCK_K), (1, 0))
-        p_sub = tl.make_block_ptr(
-            p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk), (row_lo, 0),
-            (BLOCK_SUB_Q, BLOCK_K), (1, 0))
-        otmp_full = tl.make_block_ptr(
-            otmp_base, (BLOCK_Q, HEAD_DIM), (stride_otmp_q, stride_otmp_d), (0, 0),
-            (BLOCK_Q, HEAD_DIM), (1, 0))
-        otmp_sub = tl.make_block_ptr(
-            otmp_base, (BLOCK_Q, HEAD_DIM), (stride_otmp_q, stride_otmp_d), (row_lo, 0),
-            (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
-        o_sub = tl.make_block_ptr(
-            o_base, (N_q, HEAD_DIM), (stride_oq, stride_od), (q_start_r + row_lo, 0),
-            (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
 
         # 累积量按本子核负责的行数分配
         mi = tl.full([BLOCK_SUB_Q], -1e38, dtype=tl.float32)
@@ -221,8 +210,8 @@ def fla_fwd_kernel(
         if IS_CAUSAL:
             end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
 
-        # 本子核负责的绝对行号（causal mask 用）
-        q_idx_sub = q_start_r + row_lo + tl.arange(0, BLOCK_SUB_Q)
+        # 本子核负责的绝对行号（causal mask / 输出写回用）
+        o_idx = q_start_r + rows_sub
 
         for j in range(0, end, BLOCK_K):
             # ── cube: s = q @ k^T（全量）→ 写 GM 的 S ──
@@ -231,41 +220,57 @@ def fla_fwd_kernel(
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
             tt = tl.dot(q, tl.trans(k)).to(tl.float16)
-            tl.store(s_full, tt)
+            tl.store(s_base
+                     + rows_q[:, None] * stride_sq
+                     + cols_k[None, :] * stride_sk,
+                     tt)
 
             # ── vector: 读本子核的行 → mask / softmax → 写回 P ──
-            s = tl.load(s_sub)
+            s = tl.load(s_base
+                        + rows_sub[:, None] * stride_sq
+                        + cols_k[None, :] * stride_sk)
             k_idx = j + cols_k
             if IS_CAUSAL:
-                s = tl.where(k_idx[None, :] <= q_idx_sub[:, None] + delta_qk, s, -6.0e4)
+                s = tl.where(k_idx[None, :] <= o_idx[:, None] + delta_qk, s, -6.0e4)
             if not EVEN_K:
                 s = tl.where(k_idx[None, :] < N_k, s, -6.0e4)
 
             m_prev = mi
             mi = tl.maximum(m_prev, tl.max(s, axis=-1))
             p = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
-            tl.store(p_sub, p)
+            tl.store(p_base
+                     + rows_sub[:, None] * stride_pq
+                     + cols_k[None, :] * stride_pk,
+                     p)
 
             factor = tl.exp(m_prev - mi)
             acc = factor[:, None] * acc
             li = factor * li + tl.sum(p.to(tl.float32), axis=-1)
 
             # ── cube: otmp = P @ v（P 读全量）→ 写 GM 的 OTmp ──
-            pp = tl.load(p_full)
+            pp = tl.load(p_base
+                         + rows_q[:, None] * stride_pq
+                         + cols_k[None, :] * stride_pk)
             if EVEN_K:
                 v = tl.load(v_block_ptr)
             else:
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-            tl.store(otmp_full, tl.dot(pp, v))
+            tl.store(otmp_base
+                     + rows_q[:, None] * stride_otmp_q
+                     + cols_d[None, :] * stride_otmp_d,
+                     tl.dot(pp, v))
 
             # ── vector: 读本子核的 OTmp → 累加 ──
-            acc += tl.load(otmp_sub)
+            acc += tl.load(otmp_base
+                           + rows_sub[:, None] * stride_otmp_q
+                           + cols_d[None, :] * stride_otmp_d)
 
         out = (acc / li[:, None]).to(o_ptr.dtype.element_ty)
         if EVEN_Q:
-            tl.store(o_sub, out)
+            tl.store(o_base + o_idx[:, None] * stride_oq + cols_d[None, :] * stride_od, out)
         else:
-            tl.store(o_sub, out, boundary_check=(0, 1))
+            tl.store(o_base + o_idx[:, None] * stride_oq + cols_d[None, :] * stride_od, out,
+                     mask=o_idx[:, None] < N_q)
 
 
 def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
