@@ -187,6 +187,12 @@ def fla_fwd_kernel(
         for stack_idx in tl.range(0, loopCnt, loop_unroll_factor=_UNROLL):
             base = stack_idx * SW
             IS_DIAG = base + SW - 1 >= q_start_r + delta_qk
+            # 注意：不要用 ori_xxx = xxx / xxx = ori_xxx 这种别名复位的写法。
+            # STACK_NUM=1 时那个"复位"是恒等赋值，编译器会判冗余并消除，
+            # 导致后续阶段从已 advance 越界的指针读数据（实测 STACK=1/2 全错）。
+            # 改成每个阶段重新 make_block_ptr，没有歧义。
+            s_base_ptr = s_ptr + coreIdx * stride_sc
+            p_base_ptr = p_ptr + coreIdx * stride_pc
 
             offset_base = base + tl.arange(0, BLOCK_K)
 
@@ -207,7 +213,7 @@ def fla_fwd_kernel(
                 order=(1, 0),
             )
             s_block_ptr = tl.make_block_ptr(
-                s_ptr + coreIdx * stride_sc,
+                s_base_ptr,
                 (BLOCK_Q, BLOCK_K * STACK_NUM),
                 strides=(stride_sq, stride_sk),
                 offsets=(0, 0),
@@ -215,15 +221,13 @@ def fla_fwd_kernel(
                 order=(1, 0),
             )
             p_block_ptr = tl.make_block_ptr(
-                p_ptr + coreIdx * stride_pc,
+                p_base_ptr,
                 (BLOCK_Q, BLOCK_K * STACK_NUM),
                 strides=(stride_pq, stride_pk),
                 offsets=(0, 0),
                 block_shape=(BLOCK_Q, BLOCK_K),
                 order=(1, 0),
             )
-            ori_s_block_ptr = s_block_ptr
-            ori_p_block_ptr = p_block_ptr
             # ---- 阶段 1：连续发射 4 个 QK^T（AIC 侧聚类，中间不夹 Vector 算子）----
             if EVEN_ST:
                 for si in range(STACK_NUM):
@@ -240,7 +244,14 @@ def fla_fwd_kernel(
                     k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
                     s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
 
-            s_block_ptr = ori_s_block_ptr
+            s_block_ptr = tl.make_block_ptr(
+                s_base_ptr,
+                (BLOCK_Q, BLOCK_K * STACK_NUM),
+                strides=(stride_sq, stride_sk),
+                offsets=(0, 0),
+                block_shape=(BLOCK_Q, BLOCK_K),
+                order=(1, 0),
+            )
             m_prev = mi
             # ---- 阶段 2：4 个块共享同一个联合行最大值（acc 每 4 块只缩放 1 次）----
             for si in range(STACK_NUM):
@@ -259,7 +270,14 @@ def fla_fwd_kernel(
                 mi = tl.maximum(mi, tl.max(s_vec, -1))
                 s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
 
-            s_block_ptr = ori_s_block_ptr
+            s_block_ptr = tl.make_block_ptr(
+                s_base_ptr,
+                (BLOCK_Q, BLOCK_K * STACK_NUM),
+                strides=(stride_sq, stride_sk),
+                offsets=(0, 0),
+                block_shape=(BLOCK_Q, BLOCK_K),
+                order=(1, 0),
+            )
 
             factor = tl.exp(m_prev - mi)
             acc = factor[:, None] * acc
@@ -285,8 +303,22 @@ def fla_fwd_kernel(
                 s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
                 p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
 
-            s_block_ptr = ori_s_block_ptr
-            p_block_ptr = ori_p_block_ptr
+            s_block_ptr = tl.make_block_ptr(
+                s_base_ptr,
+                (BLOCK_Q, BLOCK_K * STACK_NUM),
+                strides=(stride_sq, stride_sk),
+                offsets=(0, 0),
+                block_shape=(BLOCK_Q, BLOCK_K),
+                order=(1, 0),
+            )
+            p_block_ptr = tl.make_block_ptr(
+                p_base_ptr,
+                (BLOCK_Q, BLOCK_K * STACK_NUM),
+                strides=(stride_pq, stride_pk),
+                offsets=(0, 0),
+                block_shape=(BLOCK_Q, BLOCK_K),
+                order=(1, 0),
+            )
 
             # ---- 阶段 3：连续发射 4 个 PV，acc 全程驻留 L0C 累加 ----
             if EVEN_ST:
