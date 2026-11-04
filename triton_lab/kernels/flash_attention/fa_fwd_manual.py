@@ -127,15 +127,15 @@ def fla_fwd_kernel(
     stride_oq,
     stride_oh,
     stride_od,
-    stride_sc,
-    stride_sq,
-    stride_sk,
-    stride_pc,
-    stride_pq,
-    stride_pk,
-    stride_otmp_c,
-    stride_otmp_q,
-    stride_otmp_d,
+    stride_sc: tl.constexpr,
+    stride_sq: tl.constexpr,
+    stride_sk: tl.constexpr,
+    stride_pc: tl.constexpr,
+    stride_pq: tl.constexpr,
+    stride_pk: tl.constexpr,
+    stride_otmp_c: tl.constexpr,
+    stride_otmp_q: tl.constexpr,
+    stride_otmp_d: tl.constexpr,
     batch,
     head,
     scale,
@@ -213,6 +213,38 @@ def fla_fwd_kernel(
 
         q_start_r = i * BLOCK_Q
 
+        # ── workspace 全部用 block_ptr ──────────────────────────────────
+        # 为什么必须用 block_ptr 而不是普通指针 + 内联偏移（实测，同 tile 64x256）：
+        #   普通指针：load 的源是 memref<..., strided<[?,?], offset:?>>，
+        #             布局里两个维度都是运行时未知值 => 编译器无法证明连续/对齐
+        #             => 只能按最保守假设铺开【×16 份向量 lane 副本】
+        #             => UB 21,368,832 bits
+        #   block_ptr：load 的源是 tensor<...>，布局已知 => 紧凑分配
+        #             => UB  7,472,000 bits（与 fa_fwd.py 的 7,651,328 基本持平）
+        # ⚠️ v2 曾用 block_ptr 却算错（o_err=0.93），真因是【漏了 k/v 的 advance】，
+        #    不是 block_ptr 破坏别名分析。advance 已在下面补上。
+        s_full_bp = tl.make_block_ptr(
+            s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk), (0, 0),
+            (BLOCK_Q, BLOCK_K), (1, 0))
+        s_sub_bp = tl.make_block_ptr(
+            s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk), (row_lo, 0),
+            (BLOCK_SUB_Q, BLOCK_K), (1, 0))
+        p_full_bp = tl.make_block_ptr(
+            p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk), (0, 0),
+            (BLOCK_Q, BLOCK_K), (1, 0))
+        p_sub_bp = tl.make_block_ptr(
+            p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk), (row_lo, 0),
+            (BLOCK_SUB_Q, BLOCK_K), (1, 0))
+        otmp_full_bp = tl.make_block_ptr(
+            otmp_base, (BLOCK_Q, HEAD_DIM), (stride_otmp_q, stride_otmp_d), (0, 0),
+            (BLOCK_Q, HEAD_DIM), (1, 0))
+        otmp_sub_bp = tl.make_block_ptr(
+            otmp_base, (BLOCK_Q, HEAD_DIM), (stride_otmp_q, stride_otmp_d), (row_lo, 0),
+            (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
+        o_sub_bp = tl.make_block_ptr(
+            o_base, (N_q, HEAD_DIM), (stride_oq, stride_od),
+            (q_start_r + row_lo, 0), (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
+
         # q / k / v：只读输入，用 block_ptr 拿 boundary_check（不涉及别名问题）
         q_block_ptr = tl.make_block_ptr(
             q_base, (N_q, HEAD_DIM), (stride_qq, stride_qd), (q_start_r, 0),
@@ -249,15 +281,10 @@ def fla_fwd_kernel(
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
             tt = tl.dot(q, tl.trans(k)).to(tl.float16)
-            tl.store(s_base
-                     + rows_q[:, None] * stride_sq
-                     + cols_k[None, :] * stride_sk,
-                     tt)
+            tl.store(s_full_bp, tt)
 
             # ── vector: 读本子核的行 → mask / softmax → 写回 P ──
-            s = tl.load(s_base
-                        + rows_sub[:, None] * stride_sq
-                        + cols_k[None, :] * stride_sk)
+            s = tl.load(s_sub_bp)
             k_idx = j + cols_k
             if IS_CAUSAL:
                 s = tl.where(k_idx[None, :] <= o_idx[:, None] + delta_qk, s, -6.0e4)
@@ -267,32 +294,22 @@ def fla_fwd_kernel(
             m_prev = mi
             mi = tl.maximum(m_prev, tl.max(s, axis=-1))
             p = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
-            tl.store(p_base
-                     + rows_sub[:, None] * stride_pq
-                     + cols_k[None, :] * stride_pk,
-                     p)
+            tl.store(p_sub_bp, p)
 
             factor = tl.exp(m_prev - mi)
             acc = factor[:, None] * acc
             li = factor * li + tl.sum(p.to(tl.float32), axis=-1)
 
             # ── cube: otmp = P @ v（P 读全量）→ 写 GM 的 OTmp ──
-            pp = tl.load(p_base
-                         + rows_q[:, None] * stride_pq
-                         + cols_k[None, :] * stride_pk)
+            pp = tl.load(p_full_bp)
             if EVEN_K:
                 v = tl.load(v_block_ptr)
             else:
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-            tl.store(otmp_base
-                     + rows_q[:, None] * stride_otmp_q
-                     + cols_d[None, :] * stride_otmp_d,
-                     tl.dot(pp, v))
+            tl.store(otmp_full_bp, tl.dot(pp, v))
 
             # ── vector: 读本子核的 OTmp → 累加 ──
-            acc += tl.load(otmp_base
-                           + rows_sub[:, None] * stride_otmp_q
-                           + cols_d[None, :] * stride_otmp_d)
+            acc += tl.load(otmp_sub_bp)
 
             # 推进 KV 方向！漏了这两行会让每一轮都读同一个 j=0 的 k/v tile，
             # 结果表现为 o_err ~ 0.9（数值合理但数据全错），极难从现象反推。
@@ -301,10 +318,9 @@ def fla_fwd_kernel(
 
         out = (acc / li[:, None]).to(o_ptr.dtype.element_ty)
         if EVEN_Q:
-            tl.store(o_base + o_idx[:, None] * stride_oq + cols_d[None, :] * stride_od, out)
+            tl.store(o_sub_bp, out)
         else:
-            tl.store(o_base + o_idx[:, None] * stride_oq + cols_d[None, :] * stride_od, out,
-                     mask=o_idx[:, None] < N_q)
+            tl.store(o_sub_bp, out, boundary_check=(0, 1))
 
 
 def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
