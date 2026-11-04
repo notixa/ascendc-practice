@@ -163,80 +163,46 @@ def fla_fwd_kernel(
 
         q_start_r = i * BLOCK_Q
 
-        acc, li, mi = fla_fwd_kernel_inner_loop(
-            acc,
-            li,
-            mi,
-            q,
-            k_block_ptr,
-            v_block_ptr,
-            q_start_r,
-            N_k,
-            delta_qk,
-            BLOCK_Q=BLOCK_Q,
-            BLOCK_K=BLOCK_K,
-            EVEN_K=EVEN_K,
-            IS_CAUSAL=IS_CAUSAL,
-        )
+        end = N_k
+        if IS_CAUSAL:
+            end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
+        for j in tl.range(0, end, BLOCK_K, loop_unroll_factor=_UNROLL):
+            if EVEN_K:
+                k = tl.load(k_block_ptr)
+                v = tl.load(v_block_ptr)
+                s = tl.dot(q, tl.trans(k))
+            else:
+                k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                k_offsets = j + tl.arange(0, BLOCK_K)
+                s = tl.where(
+                    k_offsets[None, :] < N_k,
+                    tl.dot(q, tl.trans(k)),
+                    -1.0e6,
+                )
+
+            # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
+            # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
+            # 代价是每个 tile 都做一次 mask（实测 mask 成本 ≈ 0）。
+            if IS_CAUSAL:
+                q_idx = q_start_r + tl.arange(0, BLOCK_Q)
+                k_idx = j + tl.arange(0, BLOCK_K)
+                s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
+            m_prev = mi
+            mi = tl.maximum(m_prev, tl.max(s, axis=-1))
+            s = tl.exp(s - mi[:, None].to(tl.float16)).to(tl.float16)
+            factor = tl.exp(m_prev - mi)
+            acc = factor[:, None] * acc
+            acc = tl.dot(s, v, acc)
+            li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
+            k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
+            v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
 
         acc = acc / li[:, None]
         if EVEN_Q:
             tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty))
         else:
             tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty), boundary_check=(0, 1))
-
-
-@triton.jit
-def fla_fwd_kernel_inner_loop(
-    acc,
-    li,
-    mi,
-    q,
-    k_block_ptr,
-    v_block_ptr,
-    q_start_r,
-    N_k,
-    delta_qk,
-    BLOCK_Q: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    EVEN_K: tl.constexpr,
-    IS_CAUSAL: tl.constexpr,
-):
-    end = N_k
-    if IS_CAUSAL:
-        end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
-    for j in tl.range(0, end, BLOCK_K, loop_unroll_factor=_UNROLL):
-        if EVEN_K:
-            k = tl.load(k_block_ptr)
-            v = tl.load(v_block_ptr)
-            s = tl.dot(q, tl.trans(k))
-        else:
-            k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
-            v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-            k_offsets = j + tl.arange(0, BLOCK_K)
-            s = tl.where(
-                k_offsets[None, :] < N_k,
-                tl.dot(q, tl.trans(k)),
-                -1.0e6,
-            )
-
-        # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
-        # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
-        # 代价是每个 tile 都做一次 mask（实测 mask 成本 ≈ 0）。
-        if IS_CAUSAL:
-            q_idx = q_start_r + tl.arange(0, BLOCK_Q)
-            k_idx = j + tl.arange(0, BLOCK_K)
-            s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
-        m_prev = mi
-        mi = tl.maximum(m_prev, tl.max(s, axis=-1))
-        s = tl.exp(s - mi[:, None].to(tl.float16)).to(tl.float16)
-        factor = tl.exp(m_prev - mi)
-        acc = factor[:, None] * acc
-        acc = tl.dot(s, v, acc)
-        li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
-        k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
-        v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
-    return acc, li, mi
 
 
 def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
