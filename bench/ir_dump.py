@@ -78,7 +78,13 @@ def main():
     src = ir_diff.extract_kernel(os.path.join(_ROOT, KERNELS[a.kernel]))
     ce = {"N_q": a.nq, "N_k": a.nk, "delta_qk": a.nk - a.nq,
           "BLOCK_Q": a.bq, "BLOCK_K": a.bk, "HEAD_DIM": 128,
-          "IS_CAUSAL": True, "NVEC": a.nvec}
+          "IS_CAUSAL": True, "NVEC": a.nvec,
+          # 显式 GM workspace 的 stride（fa_fwd_manual.py 里标成了 tl.constexpr）
+          # 必须填，否则 build_signature 会退化成 i32 运行时参数，
+          # 编出来的 IR 就不是新版的（会重现 ×16 交叉布局）
+          "stride_sc": a.bq * a.bk, "stride_sq": a.bk, "stride_sk": 1,
+          "stride_pc": a.bq * a.bk, "stride_pq": a.bk, "stride_pk": 1,
+          "stride_otmp_c": a.bq * 128, "stride_otmp_q": 128, "stride_otmp_d": 1}
     sig, cexpr = ir_diff.build_signature(src, ce)
 
     work = tempfile.mkdtemp(prefix="irdump_", dir=os.path.join(_ROOT, ".scratch"))
