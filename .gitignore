@@ -76,3 +76,4 @@ fa_prof/
 fat_prof_AB_*/
 .scratch/
 .triton-cache/
+dump_*/
