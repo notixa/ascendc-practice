@@ -48,11 +48,6 @@ if _env_tiles:
 #       否则报 "Cannot access global variable ... from within @jit'ed function"。
 _UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
 
-# 调试用：是否开启 bishengir 的 auto multi-buffer（默认开）。
-#   FA_MB=0 -> 传给 bishengir --enable-auto-multi-buffer=False
-# UB 超限时先试这个：multi-buffer 会把主要缓冲翻倍。
-_MB = os.environ.get("FA_MB", "1") != "0"
-
 
 def _pick_tile(n_q, n_k):
     """host 侧手工选 tile（不用 autotune）。
@@ -211,7 +206,6 @@ def fla_fwd_kernel_inner_loop(
     if IS_CAUSAL:
         end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
     for j in tl.range(0, end, BLOCK_K, loop_unroll_factor=_UNROLL):
-        IS_DIAG = j + BLOCK_K - 1 >= q_start_r + delta_qk
         if EVEN_K:
             k = tl.load(k_block_ptr)
             v = tl.load(v_block_ptr)
@@ -226,7 +220,10 @@ def fla_fwd_kernel_inner_loop(
                 -1.0e6,
             )
 
-        if IS_CAUSAL and IS_DIAG:
+        # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
+        # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
+        # 代价是每个 tile 都做一次 mask（实测 mask 成本 ≈ 0）。
+        if IS_CAUSAL:
             q_idx = q_start_r + tl.arange(0, BLOCK_Q)
             k_idx = j + tl.arange(0, BLOCK_K)
             s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
@@ -293,6 +290,5 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         BLOCK_K=BLOCK_K,
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
-        multibuffer=_MB,
     )
     return O
