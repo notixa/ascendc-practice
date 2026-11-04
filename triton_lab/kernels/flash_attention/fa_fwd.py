@@ -12,22 +12,6 @@ import triton.backends.ascend.runtime
 import triton.language as tl
 from torch_npu.npu import get_device_properties
 
-# 调试用：STACK 批处理宽度 —— 每轮一次性处理 STACK_NUM 个 BLOCK_K 块。
-#   FA_STACK=1   -> 每轮 1 个块（每轮固定开销最高）
-#   FA_STACK=2/4 -> 每轮 2/4 个块（摊薄每轮固定的同步/循环/rescale 开销）
-#
-# 注意：
-#   1. @triton.jit 只能读取【标注为 tl.constexpr】的模块全局变量，否则报
-#      "Cannot access global variable ... from within @jit'ed function"；
-#   2. host 侧（torch.empty 的 shape）需要普通 Python int，不能传 constexpr 对象。
-#   ⇒ 所以这里同时给出两个名字，值来自同一个环境变量。
-_STACK = int(os.environ.get("FA_STACK", "4"))
-if _STACK <= 0:
-    raise ValueError(f"FA_STACK 必须是正整数，当前 {_STACK!r}")
-# ⚠️ 必须用 tl.constexpr(...) 构造：Triton 的 _is_constexpr() 只看【值的类型】，
-#    注解 `x: tl.constexpr = 4` 存进去的仍是普通 int，会被拒绝（实测确认）。
-_STACK_NUM = tl.constexpr(_STACK)
-
 # 注意：BKV=256 在 N 不能被 256 整除时会触发
 # "load2d 写地址越界" 的 aicore 异常（507015），尾块修复前用 _prune_bk256 按形状屏蔽。
 # 32x256 已实测崩溃；64x256 在 S=1000 编译 UB 超限。
@@ -62,7 +46,7 @@ if _env_tiles:
 #   FA_UNROLL=1（默认，不展开） / 2 / 4
 # 注意：@triton.jit 函数只能读取【标注为 tl.constexpr】的模块全局变量，
 #       否则报 "Cannot access global variable ... from within @jit'ed function"。
-_UNROLL = tl.constexpr(int(os.environ.get("FA_UNROLL", "1")))
+_UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
 
 
 def _pick_tile(n_q, n_k):
@@ -93,8 +77,6 @@ def fla_fwd_kernel(
     k_ptr,
     v_ptr,
     o_ptr,
-    s_ptr,
-    p_ptr,
     stride_qb,
     stride_qq,
     stride_qh,
@@ -111,12 +93,6 @@ def fla_fwd_kernel(
     stride_oq,
     stride_oh,
     stride_od,
-    stride_sc,
-    stride_sq,
-    stride_sk,
-    stride_pc,
-    stride_pq,
-    stride_pk,
     batch,
     head,
     scale,
@@ -128,13 +104,13 @@ def fla_fwd_kernel(
     HEAD_DIM: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
 ):
-    STACK_NUM: tl.constexpr = _STACK_NUM
     EVEN_Q = N_q % BLOCK_Q == 0
+    EVEN_K = N_k % BLOCK_K == 0
     blocks_q = tl.cdiv(N_q, BLOCK_Q)
     taskNum = batch * head * blocks_q
-    coreIdx = tl.program_id(0)
+    taskIdx = tl.program_id(0)
     coreNum = tl.num_programs(0)
-    for task in range(coreIdx, taskNum, coreNum):
+    for task in range(taskIdx, taskNum, coreNum):
         b = task // (head * blocks_q)
         i = blocks_q - 1 - ((task % (head * blocks_q)) // head)
         h = (task % (head * blocks_q)) % head
@@ -158,6 +134,22 @@ def fla_fwd_kernel(
             block_shape=(BLOCK_Q, HEAD_DIM),
             order=(1, 0),
         )
+        k_block_ptr = tl.make_block_ptr(
+            k_base,
+            (N_k, HEAD_DIM),
+            strides=(stride_kk, stride_kd),
+            offsets=(0, 0),
+            block_shape=(BLOCK_K, HEAD_DIM),
+            order=(1, 0),
+        )
+        v_block_ptr = tl.make_block_ptr(
+            v_base,
+            (N_k, HEAD_DIM),
+            strides=(stride_vk, stride_vd),
+            offsets=(0, 0),
+            block_shape=(BLOCK_K, HEAD_DIM),
+            order=(1, 0),
+        )
         mi = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
         li = tl.zeros([BLOCK_Q], dtype=tl.float32)
         acc = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
@@ -169,178 +161,106 @@ def fla_fwd_kernel(
 
         q = q * scale.to(tl.float16)
 
+        no_mask_end = (i * BLOCK_Q if IS_CAUSAL else N_k) + delta_qk
+        no_mask_block_num = no_mask_end // BLOCK_K
+        no_mask_upper = no_mask_block_num * BLOCK_K if IS_CAUSAL else N_k
+
         q_start_r = i * BLOCK_Q
 
-        SW: tl.constexpr = BLOCK_K * STACK_NUM
-        end = N_k
+        acc, li, mi = fla_fwd_kernel_inner_loop(
+            acc,
+            li,
+            mi,
+            q,
+            k_block_ptr,
+            v_block_ptr,
+            q_start_r,
+            0,
+            no_mask_upper,
+            N_k,
+            delta_qk,
+            BLOCK_Q=BLOCK_Q,
+            BLOCK_K=BLOCK_K,
+            EVEN_K=EVEN_K,
+            IS_DIAG=False,
+        )
+
         if IS_CAUSAL:
-            end = tl.minimum(q_start_r + BLOCK_Q + delta_qk, N_k)
-        T_k = tl.cdiv(end, BLOCK_K)
-        loopCnt = tl.cdiv(T_k, STACK_NUM)
-        # 子块宽度固定为 BLOCK_K 后，最后一个 stack 可能整体越过 N_k
-        # （即使 N_k % BLOCK_K == 0，例如 N_k=384/BN=64 时第 2 个 stack 覆盖 256..511），
-        # 所以边界保护必须按 STACK 粒度判断。
-        EVEN_ST: tl.constexpr = N_k % SW == 0
-
-        q_idx = q_start_r + tl.arange(0, BLOCK_Q)
-
-        for stack_idx in tl.range(0, loopCnt, loop_unroll_factor=_UNROLL):
-            base = stack_idx * SW
-            IS_DIAG = base + SW - 1 >= q_start_r + delta_qk
-            # 注意：不要用 ori_xxx = xxx / xxx = ori_xxx 这种别名复位的写法。
-            # STACK_NUM=1 时那个"复位"是恒等赋值，编译器会判冗余并消除，
-            # 导致后续阶段从已 advance 越界的指针读数据（实测 STACK=1/2 全错）。
-            # 改成每个阶段重新 make_block_ptr，没有歧义。
-            s_base_ptr = s_ptr + coreIdx * stride_sc
-            p_base_ptr = p_ptr + coreIdx * stride_pc
-
-            offset_base = base + tl.arange(0, BLOCK_K)
-
-            k_block_ptr = tl.make_block_ptr(
-                k_base,
-                (N_k, HEAD_DIM),
-                strides=(stride_kk, stride_kd),
-                offsets=(base, 0),
-                block_shape=(BLOCK_K, HEAD_DIM),
-                order=(1, 0),
+            visible_end = tl.minimum(N_q, (i + 1) * BLOCK_Q) + delta_qk
+            acc, li, mi = fla_fwd_kernel_inner_loop(
+                acc,
+                li,
+                mi,
+                q,
+                k_block_ptr,
+                v_block_ptr,
+                q_start_r,
+                no_mask_upper,
+                visible_end,
+                N_k,
+                delta_qk,
+                BLOCK_Q=BLOCK_Q,
+                BLOCK_K=BLOCK_K,
+                EVEN_K=EVEN_K,
+                IS_DIAG=True,
             )
-            v_block_ptr = tl.make_block_ptr(
-                v_base,
-                (N_k, HEAD_DIM),
-                strides=(stride_vk, stride_vd),
-                offsets=(base, 0),
-                block_shape=(BLOCK_K, HEAD_DIM),
-                order=(1, 0),
-            )
-            s_block_ptr = tl.make_block_ptr(
-                s_base_ptr,
-                (BLOCK_Q, BLOCK_K * STACK_NUM),
-                strides=(stride_sq, stride_sk),
-                offsets=(0, 0),
-                block_shape=(BLOCK_Q, BLOCK_K),
-                order=(1, 0),
-            )
-            p_block_ptr = tl.make_block_ptr(
-                p_base_ptr,
-                (BLOCK_Q, BLOCK_K * STACK_NUM),
-                strides=(stride_pq, stride_pk),
-                offsets=(0, 0),
-                block_shape=(BLOCK_Q, BLOCK_K),
-                order=(1, 0),
-            )
-            # ---- 阶段 1：连续发射 4 个 QK^T（AIC 侧聚类，中间不夹 Vector 算子）----
-            if EVEN_ST:
-                for si in range(STACK_NUM):
-                    k = tl.load(k_block_ptr)
-                    # S 是 fp16：tl.store 不做隐式收窄，必须显式 .to()
-                    tl.store(s_block_ptr, tl.dot(q, tl.trans(k)).to(tl.float16))
-                    k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
-                    s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
-            else:
-                for si in range(STACK_NUM):
-                    k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                    # S 是 fp16：tl.store 不做隐式收窄，必须显式 .to()
-                    tl.store(s_block_ptr, tl.dot(q, tl.trans(k)).to(tl.float16))
-                    k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
-                    s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
-
-            s_block_ptr = tl.make_block_ptr(
-                s_base_ptr,
-                (BLOCK_Q, BLOCK_K * STACK_NUM),
-                strides=(stride_sq, stride_sk),
-                offsets=(0, 0),
-                block_shape=(BLOCK_Q, BLOCK_K),
-                order=(1, 0),
-            )
-            m_prev = mi
-            # ---- 阶段 2：4 个块共享同一个联合行最大值（acc 每 4 块只缩放 1 次）----
-            for si in range(STACK_NUM):
-                s_vec = tl.load(s_block_ptr)
-                if not EVEN_ST:
-                    s_vec = tl.where(
-                        (offset_base + si * BLOCK_K)[None, :] < N_k, s_vec, -6.0e4
-                    )
-                if IS_CAUSAL and IS_DIAG:
-                    s_vec = tl.where(
-                        (offset_base + si * BLOCK_K)[None, :]
-                        <= q_idx[:, None] + delta_qk,
-                        s_vec,
-                        -6.0e4,
-                    )
-                mi = tl.maximum(mi, tl.max(s_vec, -1))
-                s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
-
-            s_block_ptr = tl.make_block_ptr(
-                s_base_ptr,
-                (BLOCK_Q, BLOCK_K * STACK_NUM),
-                strides=(stride_sq, stride_sk),
-                offsets=(0, 0),
-                block_shape=(BLOCK_Q, BLOCK_K),
-                order=(1, 0),
-            )
-
-            factor = tl.exp(m_prev - mi)
-            acc = factor[:, None] * acc
-            li = factor * li
-
-            for si in range(STACK_NUM):
-                s_vec = tl.load(s_block_ptr)
-                if not EVEN_ST:
-                    s_vec = tl.where(
-                        (offset_base + si * BLOCK_K)[None, :] < N_k, s_vec, -6.0e4
-                    )
-                if IS_CAUSAL and IS_DIAG:
-                    s_vec = tl.where(
-                        (offset_base + si * BLOCK_K)[None, :]
-                        <= q_idx[:, None] + delta_qk,
-                        s_vec,
-                        -6.0e4,
-                    )
-                p_vec = tl.exp(s_vec - mi[:, None])
-                li = li + tl.sum(p_vec, -1)
-                p_vec = p_vec.to(tl.float16)
-                tl.store(p_block_ptr, p_vec)
-                s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
-                p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
-
-            s_block_ptr = tl.make_block_ptr(
-                s_base_ptr,
-                (BLOCK_Q, BLOCK_K * STACK_NUM),
-                strides=(stride_sq, stride_sk),
-                offsets=(0, 0),
-                block_shape=(BLOCK_Q, BLOCK_K),
-                order=(1, 0),
-            )
-            p_block_ptr = tl.make_block_ptr(
-                p_base_ptr,
-                (BLOCK_Q, BLOCK_K * STACK_NUM),
-                strides=(stride_pq, stride_pk),
-                offsets=(0, 0),
-                block_shape=(BLOCK_Q, BLOCK_K),
-                order=(1, 0),
-            )
-
-            # ---- 阶段 3：连续发射 4 个 PV，acc 全程驻留 L0C 累加 ----
-            if EVEN_ST:
-                for si in range(STACK_NUM):
-                    p_cube = tl.load(p_block_ptr)
-                    v = tl.load(v_block_ptr)
-                    acc = tl.dot(p_cube, v, acc)
-                    p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
-                    v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
-            else:
-                for si in range(STACK_NUM):
-                    p_cube = tl.load(p_block_ptr)
-                    v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                    acc = tl.dot(p_cube, v, acc)
-                    p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
-                    v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
 
         acc = acc / li[:, None]
         if EVEN_Q:
             tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty))
         else:
             tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.jit
+def fla_fwd_kernel_inner_loop(
+    acc,
+    li,
+    mi,
+    q,
+    k_block_ptr,
+    v_block_ptr,
+    q_start_r,
+    lower_bound,
+    upper_bound,
+    N_k,
+    delta_qk,
+    BLOCK_Q: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    EVEN_K: tl.constexpr,
+    IS_DIAG: tl.constexpr,
+):
+    k_block_ptr = tl.advance(k_block_ptr, (lower_bound, 0))
+    v_block_ptr = tl.advance(v_block_ptr, (lower_bound, 0))
+    for j in tl.range(lower_bound, upper_bound, BLOCK_K, loop_unroll_factor=_UNROLL):
+        if EVEN_K:
+            k = tl.load(k_block_ptr)
+            v = tl.load(v_block_ptr)
+            s = tl.dot(q, tl.trans(k))
+        else:
+            k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+            v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
+            k_offsets = j + tl.arange(0, BLOCK_K)
+            s = tl.where(
+                k_offsets[None, :] < N_k,
+                tl.dot(q, tl.trans(k)),
+                -1.0e6,
+            )
+
+        if IS_DIAG:
+            q_idx = q_start_r + tl.arange(0, BLOCK_Q)
+            k_idx = j + tl.arange(0, BLOCK_K)
+            s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
+        m_prev = mi
+        mi = tl.maximum(m_prev, tl.max(s, axis=-1))
+        s = tl.exp(s - mi[:, None].to(tl.float16)).to(tl.float16)
+        factor = tl.exp(m_prev - mi)
+        acc = factor[:, None] * acc
+        acc = tl.dot(s, v, acc)
+        li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
+        k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
+        v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
+    return acc, li, mi
 
 
 def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
@@ -362,25 +282,12 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     delta_qk = N_k - N_q
 
     BLOCK_Q, BLOCK_K = _pick_tile(N_q, N_k)
-
     grid = (min(batch * head * triton.cdiv(N_q, BLOCK_Q), cores),)
-    n_progs = int(grid[0])
-    # s 用 fp16 落盘：s 在本 kernel 里要过 3 段 GM（写1 + 读2），fp16 让这段流量
-    # 从 12 B/元素降到 6 B/元素，同时把 UB 里 s_vec 的占用减半。
-    S = torch.empty(
-        [n_progs, BLOCK_Q, BLOCK_K * _STACK], device=Q.device, dtype=torch.float16
-    )
-    P = torch.empty(
-        [n_progs, BLOCK_Q, BLOCK_K * _STACK], device=Q.device, dtype=torch.float16
-    )
-
     fla_fwd_kernel[grid](
         Q,
         K,
         V,
         O,
-        S,
-        P,
         Q.stride(0),
         Q.stride(1),
         Q.stride(2),
@@ -397,12 +304,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         O.stride(1),
         O.stride(2),
         O.stride(3),
-        S.stride(0),
-        S.stride(1),
-        S.stride(2),
-        P.stride(0),
-        P.stride(1),
-        P.stride(2),
         batch,
         head,
         scale,
