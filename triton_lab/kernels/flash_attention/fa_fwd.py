@@ -48,6 +48,11 @@ if _env_tiles:
 #       否则报 "Cannot access global variable ... from within @jit'ed function"。
 _UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
 
+# 调试用：是否开启 bishengir 的 auto multi-buffer（默认开）。
+#   FA_MB=0 -> 传给 bishengir --enable-auto-multi-buffer=False
+# UB 超限时先试这个：multi-buffer 会把主要缓冲翻倍。
+_MB = os.environ.get("FA_MB", "1") != "0"
+
 
 def _pick_tile(n_q, n_k):
     """host 侧手工选 tile（不用 autotune）。
@@ -288,5 +293,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         BLOCK_K=BLOCK_K,
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
+        multibuffer=_MB,
     )
     return O
