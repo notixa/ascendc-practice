@@ -68,7 +68,7 @@ def _pick_tile(n_q, n_k):
     # BKV=256 的尾块 bug 未修（N 非整除时 aicore 507015），所以只在整除时使用。
     if n_k % 256 == 0:
         return 64, 256
-    return 64, 128
+    return 32, 128
 
 
 @triton.jit
