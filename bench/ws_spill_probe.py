@@ -32,7 +32,7 @@ SW = BK * STACK          # 1024 列 / 轮
 
 
 
-def run_child(tag, which):
+def run_child(tag, which, bk):
     import torch          # noqa: PLC0415
     import torch_npu      # noqa: E402,F401
 
@@ -42,42 +42,54 @@ def run_child(tag, which):
     q = torch.randn(BQ * D, dtype=torch.float16, device="npu")
     k = torch.randn(4096 * D, dtype=torch.float16, device="npu")
     o = torch.zeros(BQ, dtype=torch.float32, device="npu")
-    ws = torch.zeros(20 * 4 * BQ * BK, dtype=torch.float32, device="npu")
+    ws = torch.zeros(20 * 4 * BQ * 512, dtype=torch.float32, device="npu")
     try:
-        kern[(20,)](q, k, ws, o, 4096, BLOCK_Q=BQ, BK=BK, DIM=D)
+        kern[(20,)](q, k, ws, o, 4096, BLOCK_Q=BQ, BK=bk, DIM=D)
         torch.npu.synchronize()
         print(f"RESULT {tag} OK 0")
     except Exception as exc:                                # noqa: BLE001
-        m = re.search(r"requires (\d+) bits", str(exc))
-        print(f"RESULT {tag} {'UB' if m else 'ERR'} {int(m.group(1)) if m else 0}")
-        if not m:
-            print(f"MSG {type(exc).__name__}: {str(exc).splitlines()[0][:110]}")
+        msg = str(exc)
+        m = re.search(r"requires (\d+) bits", msg)
+        if m:
+            kind = "CC" if "cc overflow" in msg else "UB"
+            print(f"RESULT {tag} {kind} {int(m.group(1))}")
+        else:
+            print(f"RESULT {tag} ERR 0")
+            print(f"MSG {type(exc).__name__}: {msg.splitlines()[0][:110]}")
 
 
 def main():
     if len(sys.argv) > 2 and sys.argv[1] == "--one":
-        run_child(sys.argv[2], "k_hold" if sys.argv[2] == "hold" else "k_spill")
+        run_child(sys.argv[2], sys.argv[3], int(sys.argv[4]))
         return
 
-    print("=" * 72)
-    print(f"BQ={BQ}  BK={BK}  STACK={STACK}  每轮总列宽={SW}  1 份 s = 64 KB")
-    print("=" * 72)
-    for tag, which in (("hold", "k_hold"), ("spill", "k_spill")):
-        cmd = [sys.executable, os.path.abspath(__file__), "--one", tag]
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=1800).stdout
-        res = next((ln for ln in out.splitlines() if ln.startswith("RESULT")), "RESULT ? ? ?")
-        msg = next((ln for ln in out.splitlines() if ln.startswith("MSG")), "")
-        p = res.split()
-        label = "k_hold  (4 份 s 同时活)" if tag == "hold" else "k_spill (每个 dot 后落盘)"
-        if p[2] == "OK":
-            print(f"  {label:<28} 编过")
-        elif p[2] == "UB":
-            bits = int(p[3])
-            print(f"  {label:<28} UB {bits / 8 / 1024:>7.1f} KB   ({bits / 8 / 1024 / 64:.1f} 份 s)")
-        else:
-            print(f"  {label:<28} ERR  {msg[:70]}")
-    print("\n判据：spill 的 UB 若 ≈1 份 s(64KB)+acc+q ≈ 110~150 KB ⇒ 方案成立（live range 被终止）")
-    print("     若 spill 仍 ≈4 份 s(256KB) ⇒ PlanMemory 没释放，方案失效")
+    print("=" * 78)
+    print("k_spill 扫 BK：落盘后 UB 峰值只含 1 份 s，看能撑到多大列宽")
+    print(f"BQ={BQ}  STACK=4  1 份 s = BQ*BK*4B  L0C = BQ*BK*4B (上限 128 KB)")
+    print("=" * 78)
+    print(f"{'BK':>5}{'每轮列宽':>9}{'1 份 s':>9}{'L0C':>8}   {'结果':<28}")
+    for bk in (256, 320, 384, 448, 512):
+        res = _probe("spill", "k_spill", bk)
+        sw = bk * 4
+        s_kb = BQ * bk * 4 / 1024
+        print(f"{bk:>5}{sw:>9}{s_kb:>8.0f}K{s_kb:>7.0f}K   {res:<28}")
+
+    print("\n  k_hold 参照（不落盘，4 份 s 同时活）：")
+    for bk in (256, 512):
+        print(f"{bk:>5}{bk * 4:>9}{BQ * bk * 4 / 1024:>8.0f}K{BQ * bk * 4 / 1024:>7.0f}K   {_probe('hold', 'k_hold', bk):<28}")
+
+
+def _probe(tag, which, bk):
+    cmd = [sys.executable, os.path.abspath(__file__), "--one", tag, which, str(bk)]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=1800).stdout
+    res = next((ln for ln in out.splitlines() if ln.startswith("RESULT")), "RESULT ? ? 0")
+    msg = next((ln for ln in out.splitlines() if ln.startswith("MSG")), "")
+    p = res.split()
+    if p[2] == "OK":
+        return "编过 ✓"
+    if p[2] in ("UB", "CC"):
+        return f"{p[2]} overflow {int(p[3]) / 8 / 1024:.1f} KB"
+    return f"ERR {msg[:44]}"
 
 
 if __name__ == "__main__":

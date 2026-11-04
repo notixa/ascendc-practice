@@ -12,6 +12,8 @@ import triton.backends.ascend.runtime
 import triton.language as tl
 from torch_npu.npu import get_device_properties
 
+_STACK_NUM = 4
+
 # 注意：BKV=256 在 N 不能被 256 整除时会触发
 # "load2d 写地址越界" 的 aicore 异常（507015），尾块修复前用 _prune_bk256 按形状屏蔽。
 # 32x256 已实测崩溃；64x256 在 S=1000 编译 UB 超限。
@@ -77,7 +79,8 @@ def fla_fwd_kernel(
     k_ptr,
     v_ptr,
     o_ptr,
-    l_ptr,
+    s_ptr,
+    p_ptr,
     stride_qb,
     stride_qq,
     stride_qh,
@@ -94,9 +97,12 @@ def fla_fwd_kernel(
     stride_oq,
     stride_oh,
     stride_od,
-    stride_lb,
-    stride_lh,
-    stride_lq,
+    stride_sc,
+    stride_sq,
+    stride_sk,
+    stride_pc,
+    stride_pq,
+    stride_pk,
     batch,
     head,
     scale,
@@ -108,19 +114,18 @@ def fla_fwd_kernel(
     HEAD_DIM: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
 ):
+    STACK_NUM: tl.constexpr = _STACK_NUM
     EVEN_Q = N_q % BLOCK_Q == 0
-    EVEN_K = N_k % BLOCK_K == 0
     blocks_q = tl.cdiv(N_q, BLOCK_Q)
     taskNum = batch * head * blocks_q
-    taskIdx = tl.program_id(0)
+    coreIdx = tl.program_id(0)
     coreNum = tl.num_programs(0)
-    for task in range(taskIdx, taskNum, coreNum):
+    for task in range(coreIdx, taskNum, coreNum):
         b = task // (head * blocks_q)
         i = blocks_q - 1 - ((task % (head * blocks_q)) // head)
         h = (task % (head * blocks_q)) % head
         q_base = q_ptr + b * stride_qb + h * stride_qh
         o_base = o_ptr + b * stride_ob + h * stride_oh
-        l_base = l_ptr + b * stride_lb + h * stride_lh
         k_base = k_ptr + b * stride_kb + h * stride_kh
         v_base = v_ptr + b * stride_vb + h * stride_vh
         q_block_ptr = tl.make_block_ptr(
@@ -139,14 +144,6 @@ def fla_fwd_kernel(
             block_shape=(BLOCK_Q, HEAD_DIM),
             order=(1, 0),
         )
-        l_block_ptr = tl.make_block_ptr(
-            l_base,
-            (N_q,),
-            strides=(stride_lq,),
-            offsets=(i * BLOCK_Q,),
-            block_shape=(BLOCK_Q,),
-            order=(0,),
-        )
         mi = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
         li = tl.zeros([BLOCK_Q], dtype=tl.float32)
         acc = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
@@ -160,7 +157,6 @@ def fla_fwd_kernel(
 
         q_start_r = i * BLOCK_Q
 
-        STACK_NUM: tl.constexpr = 4
         SW: tl.constexpr = BLOCK_K * STACK_NUM
         end = N_k
         if IS_CAUSAL:
@@ -178,161 +174,127 @@ def fla_fwd_kernel(
             base = stack_idx * SW
             IS_DIAG = base + SW - 1 >= q_start_r + delta_qk
 
-            o0 = base + tl.arange(0, BLOCK_K)
-            o1 = o0 + BLOCK_K
-            o2 = o1 + BLOCK_K
-            o3 = o2 + BLOCK_K
+            offset_base = base + tl.arange(0, BLOCK_K)
 
-            kp0 = tl.make_block_ptr(
+            k_ptr = tl.make_block_ptr(
                 k_base,
                 (N_k, HEAD_DIM),
                 strides=(stride_kk, stride_kd),
-                offsets=(base + 0 * BLOCK_K, 0),
+                offsets=(base, 0),
                 block_shape=(BLOCK_K, HEAD_DIM),
                 order=(1, 0),
             )
-            kp1 = tl.make_block_ptr(
-                k_base,
-                (N_k, HEAD_DIM),
-                strides=(stride_kk, stride_kd),
-                offsets=(base + 1 * BLOCK_K, 0),
-                block_shape=(BLOCK_K, HEAD_DIM),
-                order=(1, 0),
-            )
-            kp2 = tl.make_block_ptr(
-                k_base,
-                (N_k, HEAD_DIM),
-                strides=(stride_kk, stride_kd),
-                offsets=(base + 2 * BLOCK_K, 0),
-                block_shape=(BLOCK_K, HEAD_DIM),
-                order=(1, 0),
-            )
-            kp3 = tl.make_block_ptr(
-                k_base,
-                (N_k, HEAD_DIM),
-                strides=(stride_kk, stride_kd),
-                offsets=(base + 3 * BLOCK_K, 0),
-                block_shape=(BLOCK_K, HEAD_DIM),
-                order=(1, 0),
-            )
-
-            vp0 = tl.make_block_ptr(
+            v_ptr = tl.make_block_ptr(
                 v_base,
                 (N_k, HEAD_DIM),
                 strides=(stride_vk, stride_vd),
-                offsets=(base + 0 * BLOCK_K, 0),
+                offsets=(base, 0),
                 block_shape=(BLOCK_K, HEAD_DIM),
                 order=(1, 0),
             )
-            vp1 = tl.make_block_ptr(
-                v_base,
-                (N_k, HEAD_DIM),
-                strides=(stride_vk, stride_vd),
-                offsets=(base + 1 * BLOCK_K, 0),
-                block_shape=(BLOCK_K, HEAD_DIM),
+            s_block_ptr = tl.make_block_ptr(
+                s_ptr + coreIdx * stride_sc,
+                (BLOCK_Q, BLOCK_K * STACK_NUM),
+                strides=(stride_sq, stride_sk),
+                offsets=(0, 0),
+                block_shape=(BLOCK_Q, BLOCK_K),
                 order=(1, 0),
             )
-            vp2 = tl.make_block_ptr(
-                v_base,
-                (N_k, HEAD_DIM),
-                strides=(stride_vk, stride_vd),
-                offsets=(base + 2 * BLOCK_K, 0),
-                block_shape=(BLOCK_K, HEAD_DIM),
+            p_block_ptr = tl.make_block_ptr(
+                p_ptr + coreIdx * stride_pc,
+                (BLOCK_Q, BLOCK_K * STACK_NUM),
+                strides=(stride_pq, stride_pk),
+                offsets=(0, 0),
+                block_shape=(BLOCK_Q, BLOCK_K),
                 order=(1, 0),
             )
-            vp3 = tl.make_block_ptr(
-                v_base,
-                (N_k, HEAD_DIM),
-                strides=(stride_vk, stride_vd),
-                offsets=(base + 3 * BLOCK_K, 0),
-                block_shape=(BLOCK_K, HEAD_DIM),
-                order=(1, 0),
-            )
-
+            ori_s_block_ptr = s_block_ptr
+            ori_p_block_ptr = p_block_ptr
             # ---- 阶段 1：连续发射 4 个 QK^T（AIC 侧聚类，中间不夹 Vector 算子）----
             if EVEN_ST:
-                k0 = tl.load(kp0)
-                k1 = tl.load(kp1)
-                k2 = tl.load(kp2)
-                k3 = tl.load(kp3)
-                s0 = tl.dot(q, tl.trans(k0))
-                s1 = tl.dot(q, tl.trans(k1))
-                s2 = tl.dot(q, tl.trans(k2))
-                s3 = tl.dot(q, tl.trans(k3))
+                for si in range(STACK_NUM):
+                    k = tl.load(k_ptr)
+                    s_cube = tl.dot(q, tl.trans(k))
+                    tl.store(s_block_ptr, s_cube)
+                    k_ptr = tl.advance(k_ptr, (BLOCK_K, 0))
+                    s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
             else:
-                k0 = tl.load(kp0, boundary_check=(0, 1), padding_option="zero")
-                k1 = tl.load(kp1, boundary_check=(0, 1), padding_option="zero")
-                k2 = tl.load(kp2, boundary_check=(0, 1), padding_option="zero")
-                k3 = tl.load(kp3, boundary_check=(0, 1), padding_option="zero")
-                s0 = tl.where(o0[None, :] < N_k, tl.dot(q, tl.trans(k0)), -1.0e6)
-                s1 = tl.where(o1[None, :] < N_k, tl.dot(q, tl.trans(k1)), -1.0e6)
-                s2 = tl.where(o2[None, :] < N_k, tl.dot(q, tl.trans(k2)), -1.0e6)
-                s3 = tl.where(o3[None, :] < N_k, tl.dot(q, tl.trans(k3)), -1.0e6)
+                for si in range(STACK_NUM):
+                    k = tl.load(k_ptr, boundary_check=(0, 1), padding_option="zero")
+                    s_cube = tl.dot(q, tl.trans(k))
+                    tl.store(s_block_ptr, s_cube)
+                    k_ptr = tl.advance(k_ptr, (BLOCK_K, 0))
+                    s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
 
-            if IS_CAUSAL and IS_DIAG:
-                s0 = tl.where(o0[None, :] <= q_idx[:, None] + delta_qk, s0, -1.0e6)
-                s1 = tl.where(o1[None, :] <= q_idx[:, None] + delta_qk, s1, -1.0e6)
-                s2 = tl.where(o2[None, :] <= q_idx[:, None] + delta_qk, s2, -1.0e6)
-                s3 = tl.where(o3[None, :] <= q_idx[:, None] + delta_qk, s3, -1.0e6)
-
+            s_block_ptr = ori_s_block_ptr
+            m_prev = mi
             # ---- 阶段 2：4 个块共享同一个联合行最大值（acc 每 4 块只缩放 1 次）----
-            mi0 = tl.maximum(mi, tl.max(s0, -1))
-            p0 = tl.exp(s0 - mi0[:, None])
-            li0 = tl.sum(p0, -1)
+            for si in range(STACK_NUM):
+                s_vec = tl.load(s_block_ptr)
+                if not EVEN_ST:
+                    s_vec = tl.where(
+                        (offset_base + si * BLOCK_K)[None, :] < N_k, s_vec, -1.0e6
+                    )
+                if IS_CAUSAL and IS_DIAG:
+                    s_vec = tl.where(
+                        (offset_base + si * BLOCK_K)[None, :]
+                        <= q_idx[:, None] + delta_qk,
+                        s_vec,
+                        -1.0e6,
+                    )
+                mi = tl.maximum(mi, tl.max(s_vec, -1))
+                s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
 
-            mi1 = tl.maximum(mi0, tl.max(s1, -1))
-            p1 = tl.exp(s1 - mi1[:, None])
-            li1 = tl.sum(p1, -1)
+            s_block_ptr = ori_s_block_ptr
 
-            mi2 = tl.maximum(mi1, tl.max(s2, -1))
-            p2 = tl.exp(s2 - mi2[:, None])
-            li2 = tl.sum(p2, -1)
-
-            mi_new = tl.maximum(mi2, tl.max(s3, -1))
-            p3 = tl.exp(s3 - mi_new[:, None])
-            li3 = tl.sum(p3, -1)
-            p3 = p3.to(tl.float16)
-
-            p0 = (p0 * tl.exp(mi0 - mi_new)[:, None]).to(tl.float16)
-            p1 = (p1 * tl.exp(mi1 - mi_new)[:, None]).to(tl.float16)
-            p2 = (p2 * tl.exp(mi2 - mi_new)[:, None]).to(tl.float16)
-
-            factor = tl.exp(mi - mi_new)
-            li = (
-                factor * li
-                + li0 * tl.exp(mi0 - mi_new)
-                + li1 * tl.exp(mi1 - mi_new)
-                + li2 * tl.exp(mi2 - mi_new)
-                + li3
-            )
+            factor = tl.exp(m_prev - mi)
             acc = factor[:, None] * acc
-            mi = mi_new
+            li = factor * li
+
+            for si in range(STACK_NUM):
+                s_vec = tl.load(s_block_ptr)
+                if not EVEN_ST:
+                    s_vec = tl.where(
+                        (offset_base + si * BLOCK_K)[None, :] < N_k, s_vec, -1.0e6
+                    )
+                if IS_CAUSAL and IS_DIAG:
+                    s_vec = tl.where(
+                        (offset_base + si * BLOCK_K)[None, :]
+                        <= q_idx[:, None] + delta_qk,
+                        s_vec,
+                        -1.0e6,
+                    )
+                p_vec = tl.exp(s_vec - mi[:, None])
+                li = li + tl.sum(p_vec, -1)
+                p_vec = p_vec.to(tl.float16)
+                tl.store(p_block_ptr, p_vec)
+                s_block_ptr = tl.advance(s_block_ptr, (0, BLOCK_K))
+                p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
+
+            s_block_ptr = ori_s_block_ptr
+            p_block_ptr = ori_p_block_ptr
 
             # ---- 阶段 3：连续发射 4 个 PV，acc 全程驻留 L0C 累加 ----
             if EVEN_ST:
-                v0 = tl.load(vp0)
-                v1 = tl.load(vp1)
-                v2 = tl.load(vp2)
-                v3 = tl.load(vp3)
+                for si in range(STACK_NUM):
+                    p_cube = tl.load(p_block_ptr)
+                    v = tl.load(v_ptr)
+                    acc = tl.dot(p_cube, v, acc)
+                    p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
+                    v_ptr = tl.advance(v_ptr, (BLOCK_K, 0))
             else:
-                v0 = tl.load(vp0, boundary_check=(0, 1), padding_option="zero")
-                v1 = tl.load(vp1, boundary_check=(0, 1), padding_option="zero")
-                v2 = tl.load(vp2, boundary_check=(0, 1), padding_option="zero")
-                v3 = tl.load(vp3, boundary_check=(0, 1), padding_option="zero")
-
-            acc = tl.dot(p0, v0, acc)
-            acc = tl.dot(p1, v1, acc)
-            acc = tl.dot(p2, v2, acc)
-            acc = tl.dot(p3, v3, acc)
+                for si in range(STACK_NUM):
+                    p_cube = tl.load(p_block_ptr)
+                    v = tl.load(v_ptr, boundary_check=(0, 1), padding_option="zero")
+                    acc = tl.dot(p_cube, v, acc)
+                    p_block_ptr = tl.advance(p_block_ptr, (0, BLOCK_K))
+                    v_ptr = tl.advance(v_ptr, (BLOCK_K, 0))
 
         acc = acc / li[:, None]
-        li = mi + tl.log(li)
         if EVEN_Q:
             tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty))
-            tl.store(l_block_ptr, li)
         else:
             tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty), boundary_check=(0, 1))
-            tl.store(l_block_ptr, li, boundary_check=(0,))
 
 
 def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
@@ -345,7 +307,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     head_dim = Q.size(dim=3)
 
     O = torch.zeros_like(Q, device=Q.device)
-    L = torch.zeros([batch, head, N_q], dtype=torch.float32, device=Q.device)
 
     scale = head_dim**-0.5
 
@@ -355,13 +316,21 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     delta_qk = N_k - N_q
 
     BLOCK_Q, BLOCK_K = _pick_tile(N_q, N_k)
+
     grid = (min(batch * head * triton.cdiv(N_q, BLOCK_Q), cores),)
+    n_progs = int(grid[0])
+    S = torch.empty([n_progs, BLOCK_Q, BLOCK_K * _STACK_NUM], device=Q.device)
+    P = torch.empty(
+        [n_progs, BLOCK_Q, BLOCK_K * _STACK_NUM], device=Q.device, dtype=torch.float16
+    )
+
     fla_fwd_kernel[grid](
         Q,
         K,
         V,
         O,
-        L,
+        S,
+        P,
         Q.stride(0),
         Q.stride(1),
         Q.stride(2),
@@ -378,9 +347,12 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         O.stride(1),
         O.stride(2),
         O.stride(3),
-        L.stride(0),
-        L.stride(1),
-        L.stride(2),
+        S.stride(0),
+        S.stride(1),
+        S.stride(2),
+        P.stride(0),
+        P.stride(1),
+        P.stride(2),
         batch,
         head,
         scale,
@@ -392,4 +364,4 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
     )
-    return O, L
+    return O

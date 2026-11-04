@@ -102,7 +102,6 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     o = torch.empty_like(q)
-    l = torch.empty((args.batch, args.heads, sq), dtype=torch.float32, device=device)
     scale = float(hd) ** -0.5
 
     cores = get_device_properties(0).cube_core_num
@@ -119,7 +118,6 @@ def main(argv: list[str] | None = None) -> int:
             k,
             v,
             o,
-            l,
             q.stride(0),
             q.stride(1),
             q.stride(2),
@@ -136,9 +134,6 @@ def main(argv: list[str] | None = None) -> int:
             o.stride(1),
             o.stride(2),
             o.stride(3),
-            l.stride(0),
-            l.stride(1),
-            l.stride(2),
             args.batch,
             args.heads,
             scale,
@@ -160,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_check:
         return 0
 
-    o_ref, lse_ref = reference_attention(torch, q, k, v, causal, scale)
+    o_ref = reference_attention(torch, q, k, v, causal, scale)
     torch.npu.synchronize()
 
     o_kf = o.permute(0, 2, 1, 3).float()
@@ -170,17 +165,9 @@ def main(argv: list[str] | None = None) -> int:
     finite_o = bool(torch.isfinite(o_kf).all().item())
     ok_o = finite_o and torch.allclose(o_kf, o_ref, atol=args.atol, rtol=args.rtol)
 
-    l_kf = l.float()
-    ldiff = (l_kf - lse_ref).abs()
-    max_lse = float(ldiff.max().item())
-    finite_l = bool(torch.isfinite(l_kf).all().item())
-    ok_l = finite_l and torch.allclose(l_kf, lse_ref, atol=args.atol, rtol=args.rtol)
-
-    status = "PASS" if (ok_o and ok_l) else "FAIL"
-    print(
-        f"[{status}] max|dO|={max_abs:.3e} maxRel={max_rel:.3e} max|dLSE|={max_lse:.3e}"
-    )
-    return 0 if (ok_o and ok_l) else 1
+    status = "PASS" if ok_o else "FAIL"
+    print(f"[{status}] max|dO|={max_abs:.3e} maxRel={max_rel:.3e}")
+    return 0 if ok_o else 1
 
 
 if __name__ == "__main__":

@@ -71,7 +71,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--atol", type=float, default=1e-2)
     parser.add_argument("--rtol", type=float, default=1e-2)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--no-lse", action="store_true", help="跳过 LSE 校验")
     return parser.parse_args(argv)
 
 
@@ -119,17 +118,15 @@ def reference_attention(torch, q, k, v, causal: bool, scale: float):
     keep = idx_k <= idx_q + (sk - sq)  # bottom-right causal
 
     o = torch.empty((b, h, sq, d), dtype=torch.float32, device=q.device)
-    lse = torch.empty((b, h, sq), dtype=torch.float32, device=q.device)
 
     for bi in range(b):
         for hi in range(h):
             s = torch.matmul(qf[bi, hi], kf[bi, hi].transpose(0, 1)) * scale
             if causal:
                 s = s.masked_fill(~keep, float("-inf"))
-            lse[bi, hi] = torch.logsumexp(s, dim=-1)
             p = torch.softmax(s, dim=-1)
             o[bi, hi] = torch.matmul(p, vf[bi, hi])
-    return o, lse
+    return o
 
 
 def _max_rel(diff, ref, eps: float = 1e-6) -> float:
@@ -153,10 +150,10 @@ def run_case(
 
     scale = float(hd) ** -0.5
 
-    o_k, l_k = fla_fwd(q, k, v, causal=causal)
+    o_k = fla_fwd(q, k, v, causal=causal)
     torch.npu.synchronize()
 
-    o_ref, lse_ref = reference_attention(torch, q, k, v, causal, scale)
+    o_ref = reference_attention(torch, q, k, v, causal, scale)
     torch.npu.synchronize()
 
     o_kf = o_k.permute(0, 2, 1, 3).float()
@@ -166,34 +163,19 @@ def run_case(
     max_rel = _max_rel(diff, o_ref)
     ok_o = finite_o and torch.allclose(o_kf, o_ref, atol=args.atol, rtol=args.rtol)
 
-    ok_l = True
-    max_lse = float("nan")
-    if not args.no_lse:
-        l_kf = l_k.float()
-        finite_l = bool(torch.isfinite(l_kf).all().item())
-        ldiff = (l_kf - lse_ref).abs()
-        max_lse = float(ldiff.max().item())
-        ok_l = finite_l and torch.allclose(
-            l_kf, lse_ref, atol=args.atol, rtol=args.rtol
-        )
-
-    status = "PASS" if (ok_o and ok_l) else "FAIL"
-    lse_msg = "skip" if args.no_lse else f"{max_lse:.3e}"
+    status = "PASS" if ok_o else "FAIL"
     print(
         f"[{status}] dtype={dtype_name:4s} causal={int(causal)} "
         f"Sq={sq:4d} Sk={sk:4d} D={hd:3d} B={args.batch} H={args.heads} "
-        f"max|dO|={max_abs:.3e} maxRel={max_rel:.3e} max|dLSE|={lse_msg}"
+        f"max|dO|={max_abs:.3e} maxRel={max_rel:.3e}"
     )
     if not finite_o:
         print("       !! O 含 NaN/Inf")
     if not ok_o:
         print(f"       !! O 超差（atol={args.atol}, rtol={args.rtol}）")
-    if not args.no_lse and not ok_l:
-        print(f"       !! LSE 超差（atol={args.atol}, rtol={args.rtol}）")
-
-    del q, k, v, o_k, l_k, o_ref, lse_ref, o_kf, diff
+    del q, k, v, o_k, o_ref, o_kf, diff
     torch.npu.empty_cache()
-    return ok_o and ok_l
+    return ok_o
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -226,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"device=npu:{args.device} cases={total} "
-        f"atol={args.atol} rtol={args.rtol} check_lse={not args.no_lse}"
+        f"atol={args.atol} rtol={args.rtol}"
     )
     print("首次调用会触发 autotune（每个 key 若干组配置），耗时会明显高于后续 case")
     print("-" * 100)

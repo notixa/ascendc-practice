@@ -161,13 +161,13 @@ def make_triton():
         #   （N_q = Q.size(1)、head = Q.size(2)），和 CATLASS 那边一致。
         #   不要 permute 成 [B,H,N,D] —— 那样 N_q/head 会互换，结果全错。
         try:
-            o, _lse = fla_fwd(q_bnhd, k_bnhd, v_bnhd, causal=causal)
+            o = fla_fwd(q_bnhd, k_bnhd, v_bnhd, causal=causal)
         except TypeError:
             if causal:
                 raise RuntimeError(
                     "fla_fwd 还不支持 causal 参数 —— 先在 triton_lab 里实现（见 bench/README.md）"
                 )
-            o, _lse = fla_fwd(q_bnhd, k_bnhd, v_bnhd)
+            o = fla_fwd(q_bnhd, k_bnhd, v_bnhd)
         return o
 
     return run

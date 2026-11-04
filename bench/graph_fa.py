@@ -72,10 +72,6 @@ class GraphedFA:
     def o(self):
         return self._out[0] if isinstance(self._out, (tuple, list)) else self._out
 
-    @property
-    def lse(self):
-        return self._out[1] if isinstance(self._out, (tuple, list)) and len(self._out) > 1 else None
-
     def replay_only(self):
         """连输入拷贝都不做 —— 纯 replay 的地板价"""
         self.g.replay()

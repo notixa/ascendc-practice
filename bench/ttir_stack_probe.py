@@ -154,15 +154,22 @@ def main():
 
     a = rows[1][2]   # group4
     b = rows[2][2]   # seq BN=256
-    print("\n" + "-" * 92)
-    print("判据 V2：方法一 vs 方法二（两者每轮总列宽都是 256）")
-    for k in keys:
-        same = "相同" if a[k] == b[k] else f"不同 ({a[k]} vs {b[k]})"
-        print(f"  {k:<16} {same}")
-    print("\n  ⇒ 若上面绝大多数“相同”，说明【方法一 ≡ 放大 BLOCK_N】——")
-    print("     两者每轮的向量算子条数一样，所以 UB 峰值也一样，")
-    print("     「方法一不会爆 UB」的说法不成立。")
-    print("  ⇒ 若 group4 的 reduce/exp 条数 ≈ 4×BN256 的 4 倍，说明 group4 反而更差。")
+    print("\n" + "=" * 92)
+    print("按【每 256 列】归一化：跨核同步只跟 tl.dot 的个数挂钩，与怎么写分组无关")
+    print("=" * 92)
+    # (label, 每轮列宽, dot 数)
+    norm = [(rows[0][0], 64, rows[0][2]["tt.dot"]),
+            (rows[1][0], 256, rows[1][2]["tt.dot"]),
+            (rows[2][0], 256, rows[2][2]["tt.dot"])]
+    print(f"{'配置':<16}{'每轮列宽':>9}{'每轮 dot':>10}{'每 256 列 dot':>14}{'预测同步数':>12}")
+    for label, width, dots in norm:
+        per256 = dots * 256 / width
+        print(f"{label:<16}{width:>9}{dots:>10}{per256:>14.0f}{per256 * 4.5:>12.0f}")
+
+    print("\n  预测同步数 = 每 256 列 dot 数 × 4.5")
+    print("  （4.5 这个系数来自 HIVM IR 实测：k_seq_64 是 8 dot→36 sync，k_seq_256 是 2 dot→9 sync）")
+    print("\n  ⇒ 若实测值是 36 / 36 / 9，则和上面的预测完全吻合，")
+    print("    说明【跨核同步 ∝ tl.dot 个数】，分组（group4）一个都省不掉。")
 
 
 if __name__ == "__main__":

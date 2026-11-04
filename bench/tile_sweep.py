@@ -59,7 +59,7 @@ def run_one(tile, n, h, causal, iters, reps):
     bq, bk = (int(v) for v in tile.split("x"))
     q = torch.randn(1, n, h, 128, dtype=torch.float16, device="npu")
     try:
-        o, l = fla_fwd(q, q, q, causal=bool(causal))
+        o = fla_fwd(q, q, q, causal=bool(causal))
         torch.npu.synchronize()
     except Exception as exc:                            # noqa: BLE001
         msg = str(exc)

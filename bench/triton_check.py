@@ -6,8 +6,9 @@
     python3 bench/triton_check.py --perf     # 正确性 + 性能（会触发 autotune，较慢）
 
 判据:
-    o_err   < 2e-2   （fp16 量化量级）
-    lse_err < 5e-2   （LSE 会放大 logits 的 fp16 误差）
+    o_err < 2e-2   （fp16 量化量级）
+
+注：本版本 kernel 不再输出 LSE，只校验 O。
 """
 
 import argparse
@@ -23,7 +24,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from kernels.flash_attention.fa_fwd import fla_fwd  # noqa: E402
 
 O_TOL = 2e-2
-LSE_TOL = 5e-2
 
 # (B, N, H, causal)
 # N 的选择是刻意的:
@@ -46,24 +46,21 @@ def golden(q, k, v, causal):
         n = q.size(1)
         m = torch.triu(torch.ones(n, n, dtype=torch.bool, device=s.device), 1)
         s = s.masked_fill(m, float("-inf"))
-    out = torch.einsum("bhqk,bkhd->bqhd", torch.softmax(s, -1), v.float())
-    lse = torch.logsumexp(s, -1)
-    return out, lse
+    return torch.einsum("bhqk,bkhd->bqhd", torch.softmax(s, -1), v.float())
 
 
 def check_one(b, n, h, causal):
     q = torch.randn(b, n, h, 128, dtype=torch.float16, device="npu")
-    o, l = fla_fwd(q, q, q, causal=causal)
+    o = fla_fwd(q, q, q, causal=causal)
     torch.npu.synchronize()
 
-    ref_o, ref_l = golden(q.cpu(), q.cpu(), q.cpu(), causal)
+    ref_o = golden(q.cpu(), q.cpu(), q.cpu(), causal)
     o_err = (o.cpu().float() - ref_o).abs().max().item()
-    lse_err = (l.cpu().float() - ref_l).abs().max().item()
 
-    ok = o_err < O_TOL and lse_err < LSE_TOL
+    ok = o_err < O_TOL
     print(
         f"  B{b} N{n:>5} H{h:<2} causal={str(causal):<5}"
-        f"  o_err={o_err:.5f}  lse_err={lse_err:.5f}  {'OK' if ok else 'FAIL'}"
+        f"  o_err={o_err:.5f}  {'OK' if ok else 'FAIL'}"
     )
     return ok
 
