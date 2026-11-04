@@ -24,7 +24,9 @@ from torch_npu.npu import get_device_properties
 _STACK = int(os.environ.get("FA_STACK", "4"))
 if _STACK <= 0:
     raise ValueError(f"FA_STACK 必须是正整数，当前 {_STACK!r}")
-_STACK_NUM: tl.constexpr = _STACK
+# ⚠️ 必须用 tl.constexpr(...) 构造：Triton 的 _is_constexpr() 只看【值的类型】，
+#    注解 `x: tl.constexpr = 4` 存进去的仍是普通 int，会被拒绝（实测确认）。
+_STACK_NUM = tl.constexpr(_STACK)
 
 # 注意：BKV=256 在 N 不能被 256 整除时会触发
 # "load2d 写地址越界" 的 aicore 异常（507015），尾块修复前用 _prune_bk256 按形状屏蔽。
@@ -60,7 +62,7 @@ if _env_tiles:
 #   FA_UNROLL=1（默认，不展开） / 2 / 4
 # 注意：@triton.jit 函数只能读取【标注为 tl.constexpr】的模块全局变量，
 #       否则报 "Cannot access global variable ... from within @jit'ed function"。
-_UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
+_UNROLL = tl.constexpr(int(os.environ.get("FA_UNROLL", "1")))
 
 
 def _pick_tile(n_q, n_k):
