@@ -219,9 +219,11 @@ def fla_fwd_kernel(
                     s = tl.dot(q, tl.trans(k)).to(tl.float16)
                     tl.store(s_block_ptr, s)
 
-                al.sync_block_set("cube", "vector", 0)
+                al.sync_block_set("cube", "vector", 0, al.PIPE.PIPE_FIX, al.PIPE.PIPE_V)
 
-                al.sync_block_wait("vector", "cube", 1)
+                al.sync_block_wait(
+                    "vector", "cube", 1, al.PIPE.PIPE_V, al.PIPE.PIPE_FIX
+                )
                 if EVEN_K:
                     v = tl.load(v_block_ptr)
                     p = tl.load(p_block_ptr)
@@ -234,10 +236,12 @@ def fla_fwd_kernel(
                     p = tl.load(p_block_ptr)
                     otmp = tl.dot(p, v)
                     tl.store(otmp_block_ptr, otmp)
-                al.sync_block_set("cube", "vector", 2)
+                al.sync_block_set("cube", "vector", 2, al.PIPE.PIPE_FIX, al.PIPE.PIPE_V)
 
             with al.scope(core_mode="vector"):
-                al.sync_block_wait("cube", "vector", 0)
+                al.sync_block_wait(
+                    "cube", "vector", 0, al.PIPE.PIPE_FIX, al.PIPE.PIPE_V
+                )
                 s = tl.load(s_block_ptr)
                 if IS_CAUSAL:
                     k_idx = j + tl.arange(0, BLOCK_K)
@@ -253,11 +257,13 @@ def fla_fwd_kernel(
                 mi = tl.maximum(m_prev, tl.max(s, axis=-1))
                 p = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
                 tl.store(p_block_ptr, p)
-                al.sync_block_set("vector", "cube", 1)
+                al.sync_block_set("vector", "cube", 1, al.PIPE.PIPE_V, al.PIPE.PIPE_FIX)
                 factor = tl.exp(m_prev - mi)
                 acc = factor[:, None] * acc
                 li = factor * li + tl.sum(p.to(tl.float32), axis=-1)
-                al.sync_block_wait("cube", "vector", 2)
+                al.sync_block_wait(
+                    "cube", "vector", 2, al.PIPE.PIPE_FIX, al.PIPE.PIPE_V
+                )
                 otmp = tl.load(otmp_block_ptr)
                 acc = acc + otmp
 
