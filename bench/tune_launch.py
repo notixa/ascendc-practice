@@ -114,6 +114,8 @@ def _parse_val(s: str):
 
 def _golden(q, causal):
     """与 fa_fwd 同口径的参考实现：scale = d**-0.5，causal 用 tril。"""
+    import torch  # 局部导入：脚本顶层不 import torch，避免 --help 时初始化 NPU driver
+
     n = q.shape[1]
     qf = q.float().permute(0, 2, 1, 3)              # [b,h,n,d]
     s = qf @ qf.transpose(-1, -2) * (q.shape[3] ** -0.5)
