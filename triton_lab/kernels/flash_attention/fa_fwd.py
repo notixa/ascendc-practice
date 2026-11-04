@@ -68,11 +68,6 @@ def _pick_tile(n_q, n_k):
     # BKV=256 的尾块 bug 未修（N 非整除时 aicore 507015），所以只在整除时使用。
     if n_k % 256 == 0:
         return 64, 256
-    # fallback 用 (64,128)，不用 (96,128)：
-    # BLOCK_Q=96 不是 2 的幂，编译器会 pad 到 128，等价于 (128,128)；
-    # 而两段式拆分让 helper 被内联两份（每份各有一套 k/v/s），再叠 multi-buffer，
-    # 实测 (96,128) 需要 3186688 bits = 389 KB，远超 192 KB 上限。
-    # (64,128) 的 s 只有 64*128*4=32 KB，两段式后仍在预算内。
     return 64, 128
 
 
@@ -166,10 +161,6 @@ def fla_fwd_kernel(
 
         q = q * scale.to(tl.float16)
 
-        no_mask_end = (i * BLOCK_Q if IS_CAUSAL else N_k) + delta_qk
-        no_mask_block_num = no_mask_end // BLOCK_K
-        no_mask_upper = no_mask_block_num * BLOCK_K if IS_CAUSAL else N_k
-
         q_start_r = i * BLOCK_Q
 
         acc, li, mi = fla_fwd_kernel_inner_loop(
@@ -180,35 +171,13 @@ def fla_fwd_kernel(
             k_block_ptr,
             v_block_ptr,
             q_start_r,
-            0,
-            no_mask_upper,
             N_k,
             delta_qk,
             BLOCK_Q=BLOCK_Q,
             BLOCK_K=BLOCK_K,
             EVEN_K=EVEN_K,
-            IS_DIAG=False,
+            IS_CAUSAL=IS_CAUSAL,
         )
-
-        if IS_CAUSAL:
-            visible_end = tl.minimum(N_q, (i + 1) * BLOCK_Q) + delta_qk
-            acc, li, mi = fla_fwd_kernel_inner_loop(
-                acc,
-                li,
-                mi,
-                q,
-                k_block_ptr,
-                v_block_ptr,
-                q_start_r,
-                no_mask_upper,
-                visible_end,
-                N_k,
-                delta_qk,
-                BLOCK_Q=BLOCK_Q,
-                BLOCK_K=BLOCK_K,
-                EVEN_K=EVEN_K,
-                IS_DIAG=True,
-            )
 
         acc = acc / li[:, None]
         if EVEN_Q:
@@ -226,18 +195,18 @@ def fla_fwd_kernel_inner_loop(
     k_block_ptr,
     v_block_ptr,
     q_start_r,
-    lower_bound,
-    upper_bound,
     N_k,
     delta_qk,
     BLOCK_Q: tl.constexpr,
     BLOCK_K: tl.constexpr,
     EVEN_K: tl.constexpr,
-    IS_DIAG: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
 ):
-    k_block_ptr = tl.advance(k_block_ptr, (lower_bound, 0))
-    v_block_ptr = tl.advance(v_block_ptr, (lower_bound, 0))
-    for j in tl.range(lower_bound, upper_bound, BLOCK_K, loop_unroll_factor=_UNROLL):
+    end = N_k
+    if IS_CAUSAL:
+        end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
+    for j in tl.range(0, end, BLOCK_K, loop_unroll_factor=_UNROLL):
+        IS_DIAG = j + BLOCK_K - 1 >= q_start_r + delta_qk
         if EVEN_K:
             k = tl.load(k_block_ptr)
             v = tl.load(v_block_ptr)
@@ -252,7 +221,7 @@ def fla_fwd_kernel_inner_loop(
                 -1.0e6,
             )
 
-        if IS_DIAG:
+        if IS_CAUSAL and IS_DIAG:
             q_idx = q_start_r + tl.arange(0, BLOCK_Q)
             k_idx = j + tl.arange(0, BLOCK_K)
             s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -1.0e6)
