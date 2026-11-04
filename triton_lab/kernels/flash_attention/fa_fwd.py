@@ -68,7 +68,12 @@ def _pick_tile(n_q, n_k):
     # BKV=256 的尾块 bug 未修（N 非整除时 aicore 507015），所以只在整除时使用。
     if n_k % 256 == 0:
         return 64, 256
-    return 96, 128
+    # fallback 用 (64,128)，不用 (96,128)：
+    # BLOCK_Q=96 不是 2 的幂，编译器会 pad 到 128，等价于 (128,128)；
+    # 而两段式拆分让 helper 被内联两份（每份各有一套 k/v/s），再叠 multi-buffer，
+    # 实测 (96,128) 需要 3186688 bits = 389 KB，远超 192 KB 上限。
+    # (64,128) 的 s 只有 64*128*4=32 KB，两段式后仍在预算内。
+    return 64, 128
 
 
 @triton.jit
