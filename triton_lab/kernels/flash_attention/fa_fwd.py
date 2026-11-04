@@ -10,6 +10,7 @@ import torch_npu
 import triton
 import triton.backends.ascend.runtime
 import triton.language as tl
+import triton.language.extra.cann.extension as al
 from torch_npu.npu import get_device_properties
 
 # 注意：BKV=256 在 N 不能被 256 整除时会触发
@@ -151,6 +152,7 @@ def fla_fwd_kernel(
     BLOCK_K: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    NVEC: tl.constexpr,
 ):
     EVEN_Q = N_q % BLOCK_Q == 0
     EVEN_K = N_k % BLOCK_K == 0
@@ -158,6 +160,21 @@ def fla_fwd_kernel(
     taskNum = batch * head * blocks_q
     taskIdx = tl.program_id(0)
     coreNum = tl.num_programs(0)
+
+    # ── AIV 子核切分（910B3 是 1 AIC : 2 AIV）─────────────────────────────
+    # 编译器【不会】自动把 vector 工作切给两个 AIV 子核：微基准实测
+    #   NVEC=1（每核做全量 64x256）: 0.387 ms
+    #   NVEC=2（每核做半量 32x256）: 0.240 ms   => 1.61x
+    # 这里用 al.extract_slice 从 cube 产出的全量 s 上切出本子核负责的行。
+    # extract_slice 的 offsets 支持运行时 tensor，且是零拷贝视图（只生成一条
+    # hivm.hir.extract_slice），不需要走 GM —— 这是 SSA 路径上唯一能切分的手段
+    # （Triton 张量不支持运行时切片，tl.split 只能沿最后一维）。
+    BLOCK_SUB_Q: tl.constexpr = BLOCK_Q // NVEC
+    if NVEC == 1:
+        row_lo = 0
+    else:
+        row_lo = (al.sub_vec_id() * BLOCK_SUB_Q).to(tl.int32)
+
     for task in range(taskIdx, taskNum, coreNum):
         b = task // (head * blocks_q)
         i = blocks_q - 1 - ((task % (head * blocks_q)) // head)
@@ -178,8 +195,8 @@ def fla_fwd_kernel(
             o_base,
             (N_q, HEAD_DIM),
             strides=(stride_oq, stride_od),
-            offsets=(i * BLOCK_Q, 0),
-            block_shape=(BLOCK_Q, HEAD_DIM),
+            offsets=(i * BLOCK_Q + row_lo, 0),   # 运行时行偏移：本子核负责的半份
+            block_shape=(BLOCK_SUB_Q, HEAD_DIM),
             order=(1, 0),
         )
         k_block_ptr = tl.make_block_ptr(
@@ -198,9 +215,9 @@ def fla_fwd_kernel(
             block_shape=(BLOCK_K, HEAD_DIM),
             order=(1, 0),
         )
-        mi = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
-        li = tl.zeros([BLOCK_Q], dtype=tl.float32)
-        acc = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
+        mi = tl.full([BLOCK_SUB_Q], -1e38, dtype=tl.float32)
+        li = tl.zeros([BLOCK_SUB_Q], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_SUB_Q, HEAD_DIM], dtype=tl.float32)
 
         if EVEN_Q:
             q = tl.load(q_block_ptr)
@@ -216,21 +233,24 @@ def fla_fwd_kernel(
             end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
         # q_idx 只依赖 q_start_r / BLOCK_Q，是循环不变量，提到循环外只算一次。
         # 循环内原本每轮重算 1 条 [BLOCK_Q] 向量加法（N=4096 causal 时 17408 次）。
-        q_idx = q_start_r + tl.arange(0, BLOCK_Q)
+        q_idx = q_start_r + row_lo + tl.arange(0, BLOCK_SUB_Q)
         for j in range(0, end, BLOCK_K):
             if EVEN_K:
                 k = tl.load(k_block_ptr)
                 v = tl.load(v_block_ptr)
-                s = tl.dot(q, tl.trans(k)).to(tl.float16)
+                s_full = tl.dot(q, tl.trans(k)).to(tl.float16)
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 k_offsets = j + tl.arange(0, BLOCK_K)
-                s = tl.where(
+                s_full = tl.where(
                     k_offsets[None, :] < N_k,
                     tl.dot(q, tl.trans(k)).to(tl.float16),
                     -6.0e4,
                 )
+            # cube 产出的是全量 [BLOCK_Q, BLOCK_K]；这里零拷贝切出本子核的半份行。
+            # NVEC=1 时 row_lo=0、sizes==block_shape，编译器会把这条视图消掉。
+            s = al.extract_slice(s_full, (row_lo, 0), (BLOCK_SUB_Q, BLOCK_K), (1, 1))
 
             # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
             # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
@@ -306,6 +326,8 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         BLOCK_K=BLOCK_K,
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
+        # FA_NVEC=2 开启 AIV 子核切分（实测 vector 段 1.61x，见 kernel 注释）。
+        NVEC=int(os.environ.get("FA_NVEC", "1")),
         **_LAUNCH,
     )
     return O

@@ -124,3 +124,11 @@ python3 bench/bench_fa.py --peak-tflops <你的峰值>
 | 5 | 多 head 并行度不够 | 加大 `B*H`，看是否饱和 |
 
 实验记录放在 `bench/experiments/YYYY-MM-DD-<假设>/`。
+
+---
+
+## 相关文档
+
+- **`bench/README_tuning.md`** —— Triton 侧调优的结论与 20 项排除清单
+  （当前最优 `(64,512)` = 2.310 ms / 59.5 TFLOPS；`num_warps`/`num_stages` 在 Ascend 上的真实语义；
+  显式 GM workspace 为什么行不通）。
