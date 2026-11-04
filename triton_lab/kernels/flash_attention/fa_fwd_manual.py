@@ -265,6 +265,11 @@ def fla_fwd_kernel(
                            + rows_sub[:, None] * stride_otmp_q
                            + cols_d[None, :] * stride_otmp_d)
 
+            # 推进 KV 方向！漏了这两行会让每一轮都读同一个 j=0 的 k/v tile，
+            # 结果表现为 o_err ~ 0.9（数值合理但数据全错），极难从现象反推。
+            k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
+            v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
+
         out = (acc / li[:, None]).to(o_ptr.dtype.element_ty)
         if EVEN_Q:
             tl.store(o_base + o_idx[:, None] * stride_oq + cols_d[None, :] * stride_od, out)
