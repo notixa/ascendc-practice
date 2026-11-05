@@ -232,7 +232,14 @@ def fla_fwd_kernel(
         # 代价：在线 softmax 的 rescale（factor * acc）次数变成 BLOCK_K/CHUNK 倍，
         #   而 910B 上 L0C→UB 不直连，每次 rescale 都要把 acc 经 GM 搬一趟。
         for j in range(0, end, BLOCK_K):
-            for jc in tl.static_range(0, BLOCK_K, CHUNK):
+            # 用普通 range（运行时循环）而不是 tl.static_range：
+            #   static_range 会把循环展开成 N 份独立的 acc/mi/li SSA 值，
+            #   而它们是 loop-carried 状态 => 每个展开体各占一份 buffer
+            #   => UB 随 CHUNK 数线性增长（实测 1/4/8 chunk -> 3152/5619/10385 K）。
+            #   这里不需要展开：s_c 是从 tl.dot(q, trans(k_c)) 新建的，
+            #   k_c 来自【运行时 offset 的 block_ptr】，没有任何 SSA 张量切片
+            #   => 普通 range 合法，且 acc/mi/li 只保一份 => UB 由 CHUNK 决定。
+            for jc in range(0, BLOCK_K, CHUNK):
                 # 每个子块用独立的 block_ptr（offset 里 j 是运行时、jc 是编译期）
                 kc_bp = tl.make_block_ptr(
                     k_base, (N_k, HEAD_DIM), (stride_kk, stride_kd),
