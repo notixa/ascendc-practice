@@ -169,147 +169,108 @@ def fla_fwd_kernel(
     BLOCK_K: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
-    CHUNK: tl.constexpr,
 ):
-    """FlashAttention 前向（两趟法 + 逻辑核内 tiling）。
-
-    为什么是两趟
-    ------------
-    单趟（在线 softmax）的循环体里有 `acc = factor[:, None] * acc`，而 `acc` 是
-    `[BLOCK_Q, HEAD_DIM]` fp32 的循环携带状态。910B 上 L0C 与 UB 之间没有直连，
-    所以每次 rescale 都必须把 `acc` 经 GM 搬一趟。一旦把 KV 方向再切成 CHUNK 段，
-    rescale 次数就变成 BLOCK_K/CHUNK 倍 => 实测每多一段慢 20~70%（见 README）。
-
-    两趟法把 rescale 彻底消掉：
-      第一趟：只累积最终的 `mi` / `li`（都是 [BLOCK_Q] 一维向量，rescale 几乎免费），
-              完全不碰 `acc`。各 chunk 之间的合并用解析公式，而不是搬 `acc`：
-                  m_new = max(mi, m_c)
-                  li    = li * exp(mi - m_new) + l_c * exp(m_c - m_new)
-      第二趟：`mi` / `li` 已定 => `p = exp(s - mi)`，没有 factor、没有 rescale =>
-              `acc = tl.dot(p, v_c, acc)` 是【纯累加链】=> 编译器可以让 acc 全程
-              留在 L0C => 内层循环可以任意切 CHUNK 而不用付 acc 往返。
-
-    收益：UB 峰值由 CHUNK 而非 BLOCK_K 决定 => BLOCK_K 可以拉到 1024/2048 =>
-    迭代次数和 `aic_scalar_ratio`（实测 50%）按比例下降。
-    代价：`s = q @ k^T` 算两遍。但 `aic_cube_ratio` 只有 14.8% => cube 大量空闲。
-    """
     EVEN_Q = N_q % BLOCK_Q == 0
     EVEN_K = N_k % BLOCK_K == 0
     blocks_q = tl.cdiv(N_q, BLOCK_Q)
     taskNum = batch * head * blocks_q
     taskIdx = tl.program_id(0)
     coreNum = tl.num_programs(0)
-
     for task in range(taskIdx, taskNum, coreNum):
         b = task // (head * blocks_q)
-        # 倒序分配 q 块：causal 下先算可见列多的块，压缩尾部离群
         i = blocks_q - 1 - ((task % (head * blocks_q)) // head)
         h = (task % (head * blocks_q)) % head
-
         q_base = q_ptr + b * stride_qb + h * stride_qh
         o_base = o_ptr + b * stride_ob + h * stride_oh
         k_base = k_ptr + b * stride_kb + h * stride_kh
         v_base = v_ptr + b * stride_vb + h * stride_vh
-
-        q_start_r = i * BLOCK_Q
-
-        q_bp = tl.make_block_ptr(
+        q_block_ptr = tl.make_block_ptr(
             q_base,
             (N_q, HEAD_DIM),
             strides=(stride_qq, stride_qd),
-            offsets=(q_start_r, 0),
+            offsets=(i * BLOCK_Q, 0),
             block_shape=(BLOCK_Q, HEAD_DIM),
             order=(1, 0),
         )
-        o_bp = tl.make_block_ptr(
+        o_block_ptr = tl.make_block_ptr(
             o_base,
             (N_q, HEAD_DIM),
             strides=(stride_oq, stride_od),
-            offsets=(q_start_r, 0),
+            offsets=(i * BLOCK_Q, 0),
             block_shape=(BLOCK_Q, HEAD_DIM),
             order=(1, 0),
         )
+        k_block_ptr = tl.make_block_ptr(
+            k_base,
+            (N_k, HEAD_DIM),
+            strides=(stride_kk, stride_kd),
+            offsets=(0, 0),
+            block_shape=(BLOCK_K, HEAD_DIM),
+            order=(1, 0),
+        )
+        v_block_ptr = tl.make_block_ptr(
+            v_base,
+            (N_k, HEAD_DIM),
+            strides=(stride_vk, stride_vd),
+            offsets=(0, 0),
+            block_shape=(BLOCK_K, HEAD_DIM),
+            order=(1, 0),
+        )
+        mi = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
+        li = tl.zeros([BLOCK_Q], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
 
         if EVEN_Q:
-            q = tl.load(q_bp)
+            q = tl.load(q_block_ptr)
         else:
-            q = tl.load(q_bp, boundary_check=(0, 1), padding_option="zero")
+            q = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
+
         q = q * scale.to(tl.float16)
+
+        q_start_r = i * BLOCK_Q
 
         end = N_k
         if IS_CAUSAL:
             end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
-
+        # q_idx 只依赖 q_start_r / BLOCK_Q，是循环不变量，提到循环外只算一次。
+        # 循环内原本每轮重算 1 条 [BLOCK_Q] 向量加法（N=4096 causal 时 17408 次）。
         q_idx = q_start_r + tl.arange(0, BLOCK_Q)
-
-        # ═══ 第一趟：只算最终的 mi / li ═══════════════════════════════════════
-        mi = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
-        li = tl.zeros([BLOCK_Q], dtype=tl.float32)
         for j in range(0, end, BLOCK_K):
-            for jc in range(0, BLOCK_K, CHUNK):
-                kc_bp = tl.make_block_ptr(
-                    k_base, (N_k, HEAD_DIM), (stride_kk, stride_kd),
-                    (j + jc, 0), (CHUNK, HEAD_DIM), (1, 0))
-                if EVEN_K:
-                    k_c = tl.load(kc_bp)
-                    s = tl.dot(q, tl.trans(k_c)).to(tl.float16)
-                else:
-                    k_c = tl.load(kc_bp, boundary_check=(0, 1), padding_option="zero")
-                    k_off = j + jc + tl.arange(0, CHUNK)
-                    s = tl.where(
-                        k_off[None, :] < N_k,
-                        tl.dot(q, tl.trans(k_c)).to(tl.float16),
-                        -6.0e4,
-                    )
-                if IS_CAUSAL:
-                    k_idx = j + jc + tl.arange(0, CHUNK)
-                    s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -6.0e4)
-                # 本 chunk 的局部最大 + 局部指数和
-                m_c = tl.max(s, axis=-1)
-                l_c = tl.sum(
-                    tl.exp((s - m_c[:, None].to(tl.float16)).to(tl.float16)).to(tl.float32),
-                    axis=-1,
+            if EVEN_K:
+                k = tl.load(k_block_ptr)
+                v = tl.load(v_block_ptr)
+                s = tl.dot(q, tl.trans(k)).to(tl.float16)
+            else:
+                k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                k_offsets = j + tl.arange(0, BLOCK_K)
+                s = tl.where(
+                    k_offsets[None, :] < N_k,
+                    tl.dot(q, tl.trans(k)).to(tl.float16),
+                    -6.0e4,
                 )
-                # 解析合并（不做 acc 搬运）
-                m_new = tl.maximum(mi, m_c)
-                li = li * tl.exp(mi - m_new) + l_c * tl.exp(m_c - m_new)
-                mi = m_new
 
-        # ═══ 第二趟：mi / li 已定 => acc 纯累加，全程留 L0C ═══════════════════
-        acc = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
-        for j in range(0, end, BLOCK_K):
-            for jc in range(0, BLOCK_K, CHUNK):
-                kc_bp = tl.make_block_ptr(
-                    k_base, (N_k, HEAD_DIM), (stride_kk, stride_kd),
-                    (j + jc, 0), (CHUNK, HEAD_DIM), (1, 0))
-                vc_bp = tl.make_block_ptr(
-                    v_base, (N_k, HEAD_DIM), (stride_vk, stride_vd),
-                    (j + jc, 0), (CHUNK, HEAD_DIM), (1, 0))
-                if EVEN_K:
-                    k_c = tl.load(kc_bp)
-                    v_c = tl.load(vc_bp)
-                    s = tl.dot(q, tl.trans(k_c)).to(tl.float16)
-                else:
-                    k_c = tl.load(kc_bp, boundary_check=(0, 1), padding_option="zero")
-                    v_c = tl.load(vc_bp, boundary_check=(0, 1), padding_option="zero")
-                    k_off = j + jc + tl.arange(0, CHUNK)
-                    s = tl.where(
-                        k_off[None, :] < N_k,
-                        tl.dot(q, tl.trans(k_c)).to(tl.float16),
-                        -6.0e4,
-                    )
-                if IS_CAUSAL:
-                    k_idx = j + jc + tl.arange(0, CHUNK)
-                    s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -6.0e4)
-                p = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
-                # ★ 没有 factor、没有 rescale => 纯累加链 => acc 留 L0C
-                acc = tl.dot(p, v_c, acc)
+            # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
+            # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
+            # 代价是每个 tile 都做一次 mask（实测 mask 成本 ≈ 0）。
+            if IS_CAUSAL:
+                k_idx = j + tl.arange(0, BLOCK_K)
+                s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -6.0e4)
+            m_prev = mi
+            mi = tl.maximum(m_prev, tl.max(s, axis=-1))
+            s = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
+            factor = tl.exp(m_prev - mi)
+            acc = factor[:, None] * acc
+            acc = tl.dot(s, v, acc)
+            li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
+            k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
+            v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
 
-        out = (acc / li[:, None]).to(o_ptr.dtype.element_ty)
+        acc = acc / li[:, None]
         if EVEN_Q:
-            tl.store(o_bp, out)
+            tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty))
         else:
-            tl.store(o_bp, out, boundary_check=(0, 1))
+            tl.store(o_block_ptr, acc.to(o_ptr.dtype.element_ty), boundary_check=(0, 1))
 
 
 def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
@@ -363,8 +324,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         BLOCK_K=BLOCK_K,
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
-        # 逻辑核内 tiling 粒度；默认等于 BLOCK_K（=不切）
-        CHUNK=int(os.environ.get("FA_CHUNK", "0")) or BLOCK_K,
         **_LAUNCH,
     )
     return O
