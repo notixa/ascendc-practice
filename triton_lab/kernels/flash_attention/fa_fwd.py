@@ -10,7 +10,6 @@ import torch_npu
 import triton
 import triton.backends.ascend.runtime
 import triton.language as tl
-import triton.language.extra.cann.extension as al
 from torch_npu.npu import get_device_properties
 
 # 注意：BKV=256 在 N 不能被 256 整除时会触发
@@ -22,6 +21,14 @@ _TILES = [
     # 且这个 config 一旦编译失败，Ascend autotuner 会把【整批】判成
     # "No valid triton configs. NoneType: None"，掩盖真实错误。
     # 想单独验证请用 FAT_TILES=128x128。
+    # (64, 512)：实测 2.298 ms / 59.8 TFLOPS，比 (64,256) 的 3.257 ms 快 1.42x。
+    #   KV 重复读随 BLOCK_K 翻倍而减半；这是 UB 允许的最大 BLOCK_K。
+    #   BLOCK_Q=64 是下限（32x512 = 3.747 ms，慢 60%）。
+    #   更大 tile 的 UB 需求（bishengir 实测）：
+    #     96x512  -> 1572864 bits（正好等于 192KB 上限，仍失败）
+    #     128x512 -> 2097152 bits（256KB，超 1.33x）
+    #     64x1024 -> 4325376 bits（4.1MB）
+    (64, 512),  # ★ N_k 能被 512 整除时启用
     (64, 256),  # ★ N_k 能被 256 整除时启用（实测比 96x128 快 18%）
     (96, 128),
     (64, 128),
@@ -78,7 +85,10 @@ def _refresh_launch_from_env() -> dict:
         "num_stages": ("FA_NS", int),
         "multibuffer": ("FA_MB", lambda v: v != "0"),
         "set_workspace_multibuffer": ("FA_WSMB", int),
-        "limit_auto_multi_buffer_only_for_local_buffer": ("FA_LAMB", lambda v: v != "0"),
+        "limit_auto_multi_buffer_only_for_local_buffer": (
+            "FA_LAMB",
+            lambda v: v != "0",
+        ),
         "inject_barrier_all": ("FA_IBA", lambda v: v != "0"),
         # CV-pipelining 的两个官方总开关（都是正规 NPUOptions 字段）
         #   FA_PRELOAD=1 -> --enable-preload=true  即 skew/preload 模式（PreLaunch）
@@ -115,6 +125,13 @@ def _pick_tile(n_q, n_k):
 
     # (64,256)：一次迭代覆盖 256 列 KV，实测在整除形状上最快。
     # BKV=256 的尾块 bug 未修（N 非整除时 aicore 507015），所以只在整除时使用。
+    # (64,512)：BKV=512 是 UB 允许的最大值，实测比 (64,256) 快 1.42x。
+    # 守卫 n_k > 512：实测 (64,512) 在 N_k == BLOCK_K == 512 且 non-causal 时
+    #   触发 aicore 507015（单次迭代 + 末尾 advance 越过 block_ptr 边界）。
+    #   N_k >= 1024 的多迭代情形正常（1024/2048/4096 non-causal 均通过）。
+    # BKV=512 同样有尾块 bug（N 非整除时 aicore 507015），只在整除时使用。
+    if n_k % 512 == 0 and n_k > 512:
+        return 64, 512
     if n_k % 256 == 0:
         return 64, 256
     return 32, 128
@@ -152,7 +169,6 @@ def fla_fwd_kernel(
     BLOCK_K: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
-    NVEC: tl.constexpr,
 ):
     EVEN_Q = N_q % BLOCK_Q == 0
     EVEN_K = N_k % BLOCK_K == 0
@@ -160,21 +176,6 @@ def fla_fwd_kernel(
     taskNum = batch * head * blocks_q
     taskIdx = tl.program_id(0)
     coreNum = tl.num_programs(0)
-
-    # ── AIV 子核切分（910B3 是 1 AIC : 2 AIV）─────────────────────────────
-    # 编译器【不会】自动把 vector 工作切给两个 AIV 子核：微基准实测
-    #   NVEC=1（每核做全量 64x256）: 0.387 ms
-    #   NVEC=2（每核做半量 32x256）: 0.240 ms   => 1.61x
-    # 这里用 al.extract_slice 从 cube 产出的全量 s 上切出本子核负责的行。
-    # extract_slice 的 offsets 支持运行时 tensor，且是零拷贝视图（只生成一条
-    # hivm.hir.extract_slice），不需要走 GM —— 这是 SSA 路径上唯一能切分的手段
-    # （Triton 张量不支持运行时切片，tl.split 只能沿最后一维）。
-    BLOCK_SUB_Q: tl.constexpr = BLOCK_Q // NVEC
-    if NVEC == 1:
-        row_lo = 0
-    else:
-        row_lo = (al.sub_vec_id() * BLOCK_SUB_Q).to(tl.int32)
-
     for task in range(taskIdx, taskNum, coreNum):
         b = task // (head * blocks_q)
         i = blocks_q - 1 - ((task % (head * blocks_q)) // head)
@@ -195,8 +196,8 @@ def fla_fwd_kernel(
             o_base,
             (N_q, HEAD_DIM),
             strides=(stride_oq, stride_od),
-            offsets=(i * BLOCK_Q + row_lo, 0),   # 运行时行偏移：本子核负责的半份
-            block_shape=(BLOCK_SUB_Q, HEAD_DIM),
+            offsets=(i * BLOCK_Q, 0),
+            block_shape=(BLOCK_Q, HEAD_DIM),
             order=(1, 0),
         )
         k_block_ptr = tl.make_block_ptr(
@@ -215,9 +216,9 @@ def fla_fwd_kernel(
             block_shape=(BLOCK_K, HEAD_DIM),
             order=(1, 0),
         )
-        mi = tl.full([BLOCK_SUB_Q], -1e38, dtype=tl.float32)
-        li = tl.zeros([BLOCK_SUB_Q], dtype=tl.float32)
-        acc = tl.zeros([BLOCK_SUB_Q, HEAD_DIM], dtype=tl.float32)
+        mi = tl.full([BLOCK_Q], -1e38, dtype=tl.float32)
+        li = tl.zeros([BLOCK_Q], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
 
         if EVEN_Q:
             q = tl.load(q_block_ptr)
@@ -233,24 +234,21 @@ def fla_fwd_kernel(
             end = tl.minimum(q_start_r + BLOCK_Q, N_k) + delta_qk
         # q_idx 只依赖 q_start_r / BLOCK_Q，是循环不变量，提到循环外只算一次。
         # 循环内原本每轮重算 1 条 [BLOCK_Q] 向量加法（N=4096 causal 时 17408 次）。
-        q_idx = q_start_r + row_lo + tl.arange(0, BLOCK_SUB_Q)
+        q_idx = q_start_r + tl.arange(0, BLOCK_Q)
         for j in range(0, end, BLOCK_K):
             if EVEN_K:
                 k = tl.load(k_block_ptr)
                 v = tl.load(v_block_ptr)
-                s_full = tl.dot(q, tl.trans(k)).to(tl.float16)
+                s = tl.dot(q, tl.trans(k)).to(tl.float16)
             else:
                 k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
                 k_offsets = j + tl.arange(0, BLOCK_K)
-                s_full = tl.where(
+                s = tl.where(
                     k_offsets[None, :] < N_k,
                     tl.dot(q, tl.trans(k)).to(tl.float16),
                     -6.0e4,
                 )
-            # cube 产出的是全量 [BLOCK_Q, BLOCK_K]；这里零拷贝切出本子核的半份行。
-            # NVEC=1 时 row_lo=0、sizes==block_shape，编译器会把这条视图消掉。
-            s = al.extract_slice(s_full, (row_lo, 0), (BLOCK_SUB_Q, BLOCK_K), (1, 1))
 
             # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
             # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
@@ -326,8 +324,6 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
         BLOCK_K=BLOCK_K,
         HEAD_DIM=head_dim,
         IS_CAUSAL=causal,
-        # FA_NVEC=2 开启 AIV 子核切分（实测 vector 段 1.61x，见 kernel 注释）。
-        NVEC=int(os.environ.get("FA_NVEC", "1")),
         **_LAUNCH,
     )
     return O
