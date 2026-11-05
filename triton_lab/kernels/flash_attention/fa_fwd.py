@@ -55,7 +55,7 @@ if _env_tiles:
 #   FA_UNROLL=1（默认，不展开） / 2 / 4
 # 注意：@triton.jit 函数只能读取【标注为 tl.constexpr】的模块全局变量，
 #       否则报 "Cannot access global variable ... from within @jit'ed function"。
-_UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
+_UNROLL = tl.constexpr(int(os.environ.get("FA_UNROLL", "1")))
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +81,8 @@ _UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
 #   FA_HINT_VAL : 切分份数（默认 2）
 # 注：Triton 内核只能访问 tl.constexpr 全局量，所以这里用整数枚举门控，
 #     hint 名字以字面量写在分支里。
-_HINT_KIND: tl.constexpr = int(os.environ.get("FA_HINT_KIND", "0"))
-_HINT_VAL: tl.constexpr = int(os.environ.get("FA_HINT_VAL", "2"))
+_HINT_KIND = tl.constexpr(int(os.environ.get("FA_HINT_KIND", "0")))
+_HINT_VAL = tl.constexpr(int(os.environ.get("FA_HINT_VAL", "2")))
 
 _LAUNCH: dict = {}
 
