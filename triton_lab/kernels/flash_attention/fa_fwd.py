@@ -10,6 +10,7 @@ import torch_npu
 import triton
 import triton.backends.ascend.runtime
 import triton.language as tl
+import triton.language.extra.cann.extension as al
 from torch_npu.npu import get_device_properties
 
 # 注意：BKV=256 在 N 不能被 256 整除时会触发
@@ -74,6 +75,15 @@ _UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
 # 也支持环境变量，方便手跑单个配置：
 #   FA_NW=8 FA_NS=3 FA_MB=1 python3 bench/triton_check.py --perf
 # ---------------------------------------------------------------------------
+# 逐 op 的编译提示：缓解多 matmul 生命区间重叠导致的 L1 越界
+# （官方分享的 tile_cube_loop 技巧；本分支 bishengir 里还认得 tile_mix_cube_num）
+#   FA_HINT_KIND: 0=不加  1=tile_mix_cube_num  2=tile_cube_loop
+#   FA_HINT_VAL : 切分份数（默认 2）
+# 注：Triton 内核只能访问 tl.constexpr 全局量，所以这里用整数枚举门控，
+#     hint 名字以字面量写在分支里。
+_HINT_KIND: tl.constexpr = int(os.environ.get("FA_HINT_KIND", "0"))
+_HINT_VAL: tl.constexpr = int(os.environ.get("FA_HINT_VAL", "2"))
+
 _LAUNCH: dict = {}
 
 
@@ -262,6 +272,12 @@ def fla_fwd_kernel(
             factor = tl.exp(m_prev - mi)
             acc = factor[:, None] * acc
             acc = tl.dot(s, v, acc)
+            # 把 cube 循环再切一刀，降低 double buffering 下的 L1 压力
+            # （PPT：多 matmul 生命区间重叠 => p/v 各 128KB×2 + q 32KB×2 > L1 512KB）
+            if _HINT_KIND == 1:
+                al.compile_hint(acc, "tile_mix_cube_num", _HINT_VAL)
+            elif _HINT_KIND == 2:
+                al.compile_hint(acc, "tile_cube_loop", _HINT_VAL)
             li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
             k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
             v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))

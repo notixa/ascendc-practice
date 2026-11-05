@@ -88,6 +88,10 @@ if n_k % 512 == 0 and n_k > 512:
 | 17 | **`enable_preload=True`**（`--enable-preload`，skew/PreLaunch）| **0.998×** | 无效 |
 | 18 | **`enable_dynamic_cv_pipeline=True`** | 快 2×，**算错** | pass 被跳过（`only supported on 91095`），只剩副作用 `disable_auto_inject_block_sync=True` ⇒ 丢跨核同步 |
 | 19 | `disable_auto_inject_block_sync=True` | 2.162 ms，**结果错** | 与 `base` 输出逐张量对比：`rel=2.56`（N=4096）、`rel=11.9`（N=512 full）、N=320 出 NaN |
+| 23 | **核内 tiling + `tl.static_range`** | **负收益** | `acc` 是 loop-carried ⇒ 展开成 N 份独立 SSA 值 ⇒ **UB 线性增长**（1/4/8 chunk → 3153/5620/10385 K）；chunk 每翻倍慢 20~70% |
+| 24 | **核内 tiling + 普通 `range`** | UB 解耦成功、**但慢 76~127%** | UB 确实只由 `CHUNK` 决定（`BK=512/1024/2048` 都是 1,593,344）⇒ **`CHUNK` 思路在 UB 侧成立**；但每 chunk 一次 `factor*acc` ⇒ 一次 `acc` 的 L0C→GM 往返 |
+| 25 | **两趟法（消除 rescale）+ `CHUNK`** | **慢 2.2~3.2×** | `s` 算两遍 + dot 缩成 `CHUNK` 尺寸 ⇒ **`BLOCK_K` 失去"少同步"的作用**（`BK` 只成了外层计数壳）|
+| 26 | **`--set-cv-pipeline-mode=skew`（= PreLaunch）** | **死锁 / NaN** | 单独用**死锁**；配 `--disable-auto-inject-block-sync=true` 变 **NaN**。对比 `unroll`（无变化）、`off`（编译报错）⇒ **skew 确实改变 codegen，但要求的同步模型与 A2 的 `injectBlockSync` 不兼容** |
 | 20 | **UB 类 4 个 flag**（`--enable-lazy-loading` / `--disable-multi-buffer-on-ub` / `--plan-memory-strategy=largest-first` / `multibuffer-mode=[(ub,1)]`）| **全部无效** | 判据是"能否编过更大 tile"：四者的最大可行 tile 都停在 `64x512`，无一救活 `128x512` |
 
 ### 3.3 明确不可用的路
@@ -228,3 +232,69 @@ s = al.extract_slice(s_full, (row_lo, 0), (BLOCK_SUB_Q, BLOCK_K), (1, 1))
 
 若 `128x512 + NVEC=2` 能编过并提速，`BLOCK_Q` 64→128 会把 KV 重复读再减半，
 预期 `aic_mte2` 占比从 30% 降到 15%。
+
+---
+
+## 10. 三条根本限制（不是调优没做好，是能力边界）
+
+### 10.1 Triton 不支持张量切片 ⇒ Cube 与 Vector 的 tile 尺寸无法解耦
+
+想实现「Cube 一次算 `[BQ, BLOCK_K]`，Vector 按 `CHUNK` 分片处理」，必须能从全量张量上切出子块。实测：
+
+| 写法 | 结果 |
+|---|---|
+| `s[:, 0:CH]`（常量切片）| ❌ `unsupported tensor index: slice object` |
+| `tl.static_range` 内 `s[:, jc:jc+CH]` | ❌ 同上 |
+| `tl.split(s)` | ❌ `CompilationError`（要求最后一维恰为 2）|
+| `tl.reshape(s,[BQ,BK//2,2])` + `tl.split` | ✅ 但只得到**偶/奇交错**的两半，且 `s_full` 仍整体存在 ⇒ **UB 一点不省** |
+| `tl.reshape + tl.permute + tl.split`（想拿连续前后半）| ❌ 编译失败 |
+
+**⇒ 想拿到 `[BQ, CHUNK]` 的 vector 输入，只能让 `dot` 就产出 `[BQ, CHUNK]` ⇒ Cube 也必须按 `CHUNK` 切 ⇒ `BLOCK_K` 失去减少同步的作用。**
+
+**⇒ 唯一能解耦的介质是 GM，代价是 1.71×（`fa_fwd_manual.py` = 3.923 ms）。**
+
+### 10.2 L0A/L0B（各 64 KB）封住 `CHUNK`
+
+两个 dot 的操作数都要进 L0A/L0B：
+
+| dot | L0B | 约束 |
+|---|---|---|
+| QK：`trans(k_c)` = `[D, CHUNK]` f16 | `CHUNK×128×2 ≤ 64 KB` | **CHUNK ≤ 256** |
+| PV：`v_c` = `[CHUNK, D]` f16 | `CHUNK×128×2 ≤ 64 KB` | **CHUNK ≤ 256** |
+
+**⇒ `CHUNK=512` 必然 `Cc`/`Cbuf` overflow（实测确认）。**
+
+### 10.3 `PreLaunch` 在 A2 的 Triton 上没有可用对应物
+
+见清单第 26 项。CATLASS 的 `preLaunch=2 + 3 槽 ring` 依赖 Ascend C 手工管理流水与同步；Triton 侧只有 `--enable-preload`（空转）和 `--set-cv-pipeline-mode=skew`（死锁/NaN）。
+
+---
+
+## 11. 三方 benchmark 结果（`bench/bench_all.py --preset realistic --modes causal`）
+
+口径：CATLASS = `fat_bench` C++ 直调；Triton = `--graph` device-only；vendor = `npu_fusion_attention`（含 launcher）。
+
+| B | N | H | CATLASS ms | Triton ms | vendor ms | Triton/vendor | Triton/CATLASS |
+|---|---|---|---|---|---|---|---|
+| 1 | 4096 | 8 | 0.3436 | 0.6054 | 0.6099 | **0.99×** | 1.76× |
+| 1 | 4096 | 32 | 1.2929 | 2.3211 | 2.1736 | **1.07×** | 1.80× |
+| 1 | 2048 | 32 | 0.4176 | 0.7552 | 0.5661 | 1.33× | 1.81× |
+| 4 | 2048 | 8 | 0.4149 | 0.7542 | 0.5658 | 1.33× | 1.82× |
+| 1 | 2048 | 8 | 0.1234 | 0.3015 | 0.1973 | 1.53× | 2.44× |
+| 16 | 512 | 8 | 0.2318 | 0.4346 | 0.1685 | 2.58× | 1.88× |
+| 1 | 512 | 8 | 0.0340 | 0.2929 | 0.1230 | **2.38×** | **8.61×** |
+
+**读法：**
+- **N ≥ 2048：Triton 稳定落后 CATLASS 1.76~1.82×**，这是 §10 那三条限制的直接结果
+- **N = 4096 时 Triton 与 vendor 基本持平（0.99× / 1.07×）** —— 大 N 上我们的 kernel 效率已与 CANN 内置算子同档
+- **N = 512 时崩到 2.38~2.58×** —— 守卫强制 `(64,256)`（避开 507015）⇒ 迭代翻倍；且任务数少（`B=1,H=8` 只有 64 个任务是 3.2 波）
+- **注意口径对 Triton 有利**（Triton 是纯 device，vendor 含 launcher）。用 CATLASS 的 `app` 列（含 launcher）比 Triton 的 `device` 列，仍是 1.74~7.06× ⇒ **1.8× 的差距不是计时口径造成的**
+
+---
+
+## 12. 后续可做的两件事（都在 `_pick_tile` 层面，低风险）
+
+| # | 改动 | 预期 |
+|---|---|---|
+| 1 | **修掉 507015**：把外层 `k/v` 的 `tl.advance` 换成每轮 `tl.make_block_ptr(offsets=(j,0))` | 让 `(64,512)` 在 `N_k == BLOCK_K` 时可用 ⇒ `N=512` 迭代减半 ⇒ ~25% |
+| 2 | `N ≤ 1024` 时用 `BLOCK_Q=32` | 任务数翻倍 ⇒ 波次利用率 80%→91% |
