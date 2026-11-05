@@ -51,6 +51,12 @@ if _env_tiles:
 
 # 调试用：循环展开因子。AIC 有 55.5% 的时间在跑标量（循环控制 + 地址计算），
 # 展开循环能让每份工作量只付一次循环控制开销。
+# 手动 CV 流水：把 cube 的 s_{j+1} = q·k_{j+1}^T 提到 vector 处理 s_j 之前。
+# 这两件事在数据上互不依赖，摆成相邻语句后编译器/硬件才有可能重叠执行。
+# 910B 无 L0C→UB，cube 的 s 本来就走 GM workspace（默认 6 份缓冲），
+# 所以 s 双缓冲不额外吃 UB。
+_ROTATE = tl.constexpr(int(os.environ.get("FA_ROTATE", "0")))
+
 #   FA_UNROLL=1（默认，不展开） / 2 / 4
 # 注意：@triton.jit 函数只能读取【标注为 tl.constexpr】的模块全局变量，
 #       否则报 "Cannot access global variable ... from within @jit'ed function"。
@@ -235,46 +241,89 @@ def fla_fwd_kernel(
         # q_idx 只依赖 q_start_r / BLOCK_Q，是循环不变量，提到循环外只算一次。
         # 循环内原本每轮重算 1 条 [BLOCK_Q] 向量加法（N=4096 causal 时 17408 次）。
         q_idx = q_start_r + tl.arange(0, BLOCK_Q)
-        for j in range(0, end, BLOCK_K):
+        if _ROTATE:
+            # ═══ 旋转版：cube 抢跑一块 ═══════════════════════════════════════
+            k0_bp = tl.make_block_ptr(
+                k_base, (N_k, HEAD_DIM), (stride_kk, stride_kd),
+                (0, 0), (BLOCK_K, HEAD_DIM), (1, 0))
             if EVEN_K:
-                k = tl.load(k_block_ptr)
-                v = tl.load(v_block_ptr)
-                s = tl.dot(q, tl.trans(k)).to(tl.float16)
+                s_prev = tl.dot(q, tl.trans(tl.load(k0_bp))).to(tl.float16)
             else:
-                k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-                k_offsets = j + tl.arange(0, BLOCK_K)
-                s = tl.where(
-                    k_offsets[None, :] < N_k,
-                    tl.dot(q, tl.trans(k)).to(tl.float16),
-                    -6.0e4,
-                )
-
-            # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
-            # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
-            # 代价是每个 tile 都做一次 mask（实测 mask 成本 ≈ 0）。
+                k0 = tl.load(k0_bp, boundary_check=(0, 1), padding_option="zero")
+                k0_off = tl.arange(0, BLOCK_K)
+                s_prev = tl.where(
+                    k0_off[None, :] < N_k,
+                    tl.dot(q, tl.trans(k0)).to(tl.float16), -6.0e4)
             if IS_CAUSAL:
-                k_idx = j + tl.arange(0, BLOCK_K)
-                s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -6.0e4)
-            m_prev = mi
-            # 显式指定 NaN 传播语义。
-            # 默认 (tl.PropagateNan.NONE) 生成 arith.maxnumf —— "忽略 NaN 取另一个
-            # 操作数"，芯片没有这条指令，需要软件模拟 ⇒ 额外 UB + 多条指令。
-            # 指定 ALL 后生成 arith.maximumf ⇒ 一条指令。
-            # 我们的 s 永不为 NaN（mask 用 -6.0e4 而不是 -inf），
-            # 所以两种语义在有限数据上结果完全相同 ⇒ 零风险的等价替换。
-            mi = tl.maximum(
-                m_prev,
-                tl.max(s, axis=-1, propagate_nan=tl.PropagateNan.ALL),
-                propagate_nan=tl.PropagateNan.ALL,
-            )
-            s = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
-            factor = tl.exp(m_prev - mi)
-            acc = factor[:, None] * acc
-            acc = tl.dot(s, v, acc)
-            li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
-            k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
-            v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
+                k0_idx = tl.arange(0, BLOCK_K)
+                s_prev = tl.where(k0_idx[None, :] <= q_idx[:, None] + delta_qk, s_prev, -6.0e4)
+
+            for j in range(0, end, BLOCK_K):
+                # ── cube：预取下一块的 s（与下面整段 vector 工作无依赖）──
+                kn_bp = tl.make_block_ptr(
+                    k_base, (N_k, HEAD_DIM), (stride_kk, stride_kd),
+                    (j + BLOCK_K, 0), (BLOCK_K, HEAD_DIM), (1, 0))
+                if EVEN_K:
+                    s_next = tl.dot(q, tl.trans(tl.load(kn_bp))).to(tl.float16)
+                else:
+                    kn = tl.load(kn_bp, boundary_check=(0, 1), padding_option="zero")
+                    kn_off = j + BLOCK_K + tl.arange(0, BLOCK_K)
+                    s_next = tl.where(
+                        kn_off[None, :] < N_k,
+                        tl.dot(q, tl.trans(kn)).to(tl.float16), -6.0e4)
+                if IS_CAUSAL:
+                    kn_idx = j + BLOCK_K + tl.arange(0, BLOCK_K)
+                    s_next = tl.where(kn_idx[None, :] <= q_idx[:, None] + delta_qk, s_next, -6.0e4)
+
+                # ── 当前块的 v ──
+                v_bp = tl.make_block_ptr(
+                    v_base, (N_k, HEAD_DIM), (stride_vk, stride_vd),
+                    (j, 0), (BLOCK_K, HEAD_DIM), (1, 0))
+                if EVEN_K:
+                    v = tl.load(v_bp)
+                else:
+                    v = tl.load(v_bp, boundary_check=(0, 1), padding_option="zero")
+
+                # ── vector：处理上一块的 s ──
+                m_prev = mi
+                mi = tl.maximum(m_prev, tl.max(s_prev, axis=-1))
+                p = tl.exp((s_prev - mi[:, None].to(tl.float16)).to(tl.float16))
+                factor = tl.exp(m_prev - mi)
+                acc = factor[:, None] * acc
+                acc = tl.dot(p, v, acc)
+                li = factor * li + tl.sum(p.to(tl.float32), axis=-1)
+                s_prev = s_next
+        else:
+            for j in range(0, end, BLOCK_K):
+                if EVEN_K:
+                    k = tl.load(k_block_ptr)
+                    v = tl.load(v_block_ptr)
+                    s = tl.dot(q, tl.trans(k)).to(tl.float16)
+                else:
+                    k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                    v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
+                    k_offsets = j + tl.arange(0, BLOCK_K)
+                    s = tl.where(
+                        k_offsets[None, :] < N_k,
+                        tl.dot(q, tl.trans(k)).to(tl.float16),
+                        -6.0e4,
+                    )
+
+                # 只用 constexpr 的 IS_CAUSAL 判断：没有运行时 IS_DIAG 就没有 scf.if，
+                # 编译器对 causal/非 causal 各生成一份特化，UB 峰值只按一条路径算。
+                # 代价是每个 tile 都做一次 mask（实测 mask 成本 ≈ 0）。
+                if IS_CAUSAL:
+                    k_idx = j + tl.arange(0, BLOCK_K)
+                    s = tl.where(k_idx[None, :] <= q_idx[:, None] + delta_qk, s, -6.0e4)
+                m_prev = mi
+                mi = tl.maximum(m_prev, tl.max(s, axis=-1))
+                s = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
+                factor = tl.exp(m_prev - mi)
+                acc = factor[:, None] * acc
+                acc = tl.dot(s, v, acc)
+                li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
+                k_block_ptr = tl.advance(k_block_ptr, (BLOCK_K, 0))
+                v_block_ptr = tl.advance(v_block_ptr, (BLOCK_K, 0))
 
         acc = acc / li[:, None]
         if EVEN_Q:
