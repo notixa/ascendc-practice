@@ -147,7 +147,8 @@ def fla_fwd_kernel(
             s = tl.exp((s - mi[:, None].to(tl.float16)).to(tl.float16))
             factor = tl.exp(m_prev - mi)
             acc = factor[:, None] * acc
-            acc = tl.dot(s, v, acc)
+            pv = tl.dot(s, v)
+            acc = acc + pv
             li = factor * li + tl.sum(s.to(tl.float32), axis=-1)
 
         acc = acc / li[:, None]
