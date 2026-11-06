@@ -53,16 +53,22 @@ def flash_decoding_s1_kernel(
     for taskId in range(pid, task_num, prog_num):
         b = taskId // (head_kv * S_BLOCKS)
         h = (taskId % (head_kv * S_BLOCKS)) // S_BLOCKS
-        s = (taskId % (head_kv * S_BLOCKS)) % S_BLOCKS
+        split_id = (taskId % (head_kv * S_BLOCKS)) % S_BLOCKS
 
         q_base = q_ptr + b * stride_qb + h * stride_qh
         k_base = k_ptr + b * stride_kb + h * stride_kh
         v_base = v_ptr + b * stride_vb + h * stride_vh
         mid_o_base = (
-            mid_o_ptr + b * stride_mid_ob + h * stride_mid_oh + s * stride_mid_os
+            mid_o_ptr
+            + b * stride_mid_ob
+            + h * stride_mid_oh
+            + split_id * stride_mid_os
         )
         mid_lse_base = (
-            mid_lse_ptr + b * stride_mid_lb + h * stride_mid_lh + s * stride_mid_ls
+            mid_lse_ptr
+            + b * stride_mid_lb
+            + h * stride_mid_lh
+            + split_id * stride_mid_ls
         )
 
         q_block_ptr = tl.make_block_ptr(
@@ -96,8 +102,8 @@ def flash_decoding_s1_kernel(
 
         q = tl.load(q_block_ptr, boundary_check=(0,), padding_option="zero")
 
-        kv_start_r = s * SPLIT_S
-        kv_end_r = tl.minimum((s + 1) * SPLIT_S, seq_len)
+        kv_start_r = split_id * SPLIT_S
+        kv_end_r = tl.minimum((split_id + 1) * SPLIT_S, seq_len)
 
         kv_offsets = tl.arange(0, BLOCK_S)
 
@@ -120,15 +126,15 @@ def flash_decoding_s1_kernel(
             )
 
             k = tl.load(k_block_ptr, boundary_check=(0,), padding_option="zero")
-            s = tl.dot(q, tl.trans(k)).to(tl.float16)
+            score = tl.dot(q, tl.trans(k)).to(tl.float16)
 
-            s = s * scale.to(tl.float16)
-            s = tl.where((kv_offsets + kv_row)[None, :] < kv_end_r, s, -6.0e4).to(
-                tl.float16
-            )
+            score = score * scale.to(tl.float16)
+            score = tl.where(
+                (kv_offsets + kv_row)[None, :] < kv_end_r, score, -6.0e4
+            ).to(tl.float16)
             m_prev = m
-            m = tl.maximum(m_prev, tl.max(s, -1))
-            p = tl.math.exp2(s - m[:, None])
+            m = tl.maximum(m_prev, tl.max(score, -1))
+            p = tl.math.exp2(score - m[:, None])
             alpha = tl.math.exp2(m_prev - m)
             lse = lse * alpha + tl.sum(p, -1)
 
