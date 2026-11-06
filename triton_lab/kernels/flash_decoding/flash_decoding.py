@@ -133,7 +133,8 @@ def flash_decoding_s1_kernel(
             lse = lse * alpha + tl.sum(p, -1)
 
             v = tl.load(v_block_ptr, boundary_check=(0,), padding_option="zero")
-            otmp = tl.dot(p, v)
+            # exp2 可能把 fp16 提升到 fp32；tl.dot 要求两边同 dtype。
+            otmp = tl.dot(p.to(v.dtype), v)
             acc = acc * alpha[:, None] + otmp
 
         mid_o = acc / lse[:, None]
