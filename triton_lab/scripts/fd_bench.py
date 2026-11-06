@@ -3,7 +3,12 @@
 对比：
 
 - 被测：``kernels.flash_decoding.flash_decoding.flash_decoding``（两段式 split-KV）
-- 基线：eager PyTorch（``softmax(QK^T * scale) @ V``，softmax 用 fp32）
+- 基线：
+  - ``eager``：PyTorch ``softmax(QK^T * scale) @ V``（softmax 用 fp32）
+  - ``fia``：``torch_npu.npu_fused_infer_attention_score``（CANN 官方
+    FusedInferAttentionScore，支持 GQA/MQA；decode 场景内部的 FlashDecoding）
+  - ``sdpa``：``torch.nn.functional.scaled_dot_product_attention(enable_gqa=True)``
+  - ``none``：不测基线
 
 计时用 ``torch.npu.Event``；没有 Event 时回退到 ``time.perf_counter`` + synchronize。
 每个 case 先 warmup，再跑 ``trials`` 轮，每轮 ``iters`` 次，取中位数。
@@ -26,6 +31,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import sys
 import time
 from pathlib import Path
@@ -66,9 +72,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--baseline",
-        choices=["eager", "none"],
+        choices=["eager", "fia", "sdpa", "none"],
         default="eager",
-        help="baseline 实现；none 表示只测 kernel",
+        help="baseline：eager / fia（官方 FIA）/ sdpa / none",
     )
     parser.add_argument(
         "--split-s",
@@ -125,6 +131,62 @@ def eager_attention(torch, q, k, v):
     scores = torch.matmul(q, k.transpose(-2, -1)) * scale
     p = torch.softmax(scores.float(), dim=-1).to(q.dtype)
     return torch.matmul(p, v)
+
+
+def fia_attention(torch, q, k, v):
+    """CANN 官方 FusedInferAttentionScore（FIA）基线。
+
+    q: [B, H_kv, G, D] -> BNSD [B, H_q, 1, D]
+    k/v: [B, H_kv, S, D]
+    """
+    import torch_npu
+
+    fn = getattr(torch_npu, "npu_fused_infer_attention_score", None)
+    if fn is None:
+        raise RuntimeError(
+            "torch_npu.npu_fused_infer_attention_score 不可用；"
+            "请确认 torch_npu/CANN 版本支持 FIA"
+        )
+
+    batch, heads_kv, group, dim = q.shape
+    heads_q = heads_kv * group
+    q_bnsd = q.reshape(batch, heads_q, 1, dim)
+    seq_len = k.size(2)
+
+    kwargs = {
+        "num_heads": heads_q,
+        "num_key_value_heads": heads_kv,
+        "input_layout": "BNSD",
+        "scale": dim**-0.5,
+        # Q_S=1 时 actual_seq_lengths 不生效，官方 decode 示例只传 kv 长度。
+        "actual_seq_lengths_kv": [seq_len] * batch,
+    }
+    try:
+        params = inspect.signature(fn).parameters
+        filtered = {name: value for name, value in kwargs.items() if name in params}
+        if "num_heads" in filtered:
+            kwargs = filtered
+    except (TypeError, ValueError):
+        pass
+
+    result = fn(q_bnsd, k, v, **kwargs)
+    out = result[0] if isinstance(result, (tuple, list)) else result
+    return out.reshape(batch, heads_kv, group, dim)
+
+
+def sdpa_attention(torch, q, k, v):
+    """PyTorch SDPA GQA 基线（部分版本会下沉到 FIA）。"""
+    batch, heads_kv, group, dim = q.shape
+    q_bnsd = q.reshape(batch, heads_kv * group, 1, dim)
+    out = torch.nn.functional.scaled_dot_product_attention(
+        q_bnsd,
+        k,
+        v,
+        dropout_p=0.0,
+        is_causal=False,
+        enable_gqa=True,
+    )
+    return out.reshape(batch, heads_kv, group, dim)
 
 
 def check_output(torch, run_kernel, q, k, v, atol: float, rtol: float) -> tuple[bool, float]:
@@ -289,9 +351,36 @@ def run_case(
 
     base_ms = float("nan")
     if args.baseline == "eager":
+        base_fn = lambda: eager_attention(torch, q, k, v)
+    elif args.baseline == "fia":
+        base_fn = lambda: fia_attention(torch, q, k, v)
+    elif args.baseline == "sdpa":
+        base_fn = lambda: sdpa_attention(torch, q, k, v)
+    else:
+        base_fn = None
+
+    if base_fn is not None:
+        if args.graph:
+            # 和 kernel 同口径：baseline 也捕获成 graph，避免 host 开销差异。
+            for _ in range(3):
+                base_fn()
+            torch.npu.synchronize()
+
+            base_graph = torch.npu.NPUGraph()
+            with torch.npu.graph(base_graph):
+                base_out = base_fn()
+            torch.npu.synchronize()
+
+            def base_run():
+                base_graph.replay()
+                return base_out
+
+        else:
+            base_run = base_fn
+
         base_ms, _ = bench_ms(
             torch,
-            lambda: eager_attention(torch, q, k, v),
+            base_run,
             args.warmup,
             args.iters,
             args.trials,
@@ -343,9 +432,12 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"device=npu:{args.device} dtype={args.dtype} preset={args.preset} "
         f"split_s={args.split_s} block_s={args.block_s} "
+        f"baseline={args.baseline} "
         f"reuse_workspace={int(args.reuse_workspace)} graph={int(args.graph)} "
         f"warmup={args.warmup} iters={args.iters} trials={args.trials}"
     )
+    if args.graph and args.baseline != "none":
+        print("[NOTE] kernel 和 baseline 都走 graph replay，x 倍速同口径")
     print("-" * 150)
 
     errored = 0
