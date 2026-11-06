@@ -96,7 +96,7 @@ def flash_decoding_s1_kernel(
             order=(0,),
         )
 
-        m = tl.full([BLOCK_M], -6.0e4, dtype=tl.float16)
+        m = tl.full([BLOCK_M], -6.0e4, dtype=tl.float32)
         lse = tl.full([BLOCK_M], 0.0, dtype=tl.float32)
         acc = tl.full([BLOCK_M, HEAD_DIM], 0.0, dtype=tl.float32)
 
