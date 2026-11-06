@@ -1,0 +1,40 @@
+# ruff 配置（独立文件，覆盖整个仓库；triton_lab/ 下另有自己的 pyproject.toml 管依赖）
+#
+# 目的：统一按行宽换行。函数签名、调用、字面量一旦超过 line-length 就折行，
+#       不会挤成一长行；参数列表里保留尾逗号时会强制每行一个。
+
+line-length = 88
+indent-width = 4
+
+# 这些目录/文件不参与格式化与检查（实验残渣、缓存、生成物、第三方代码）
+extend-exclude = [
+    ".scratch",
+    ".triton-cache",
+    ".uv-cache",
+    ".venv",
+    "dump_*",
+    "*.egg-info",
+    # CANN 算子工程的构建产物（里面是生成的 .py，不要动）
+    "build_out",
+    "build",
+    # 第三方/参考代码
+    "third_party",
+    "vendor",
+    # ruff 0.17 会格式化 Markdown 里的代码块；文档不参与，避免无关改动
+    "*.md",
+]
+
+# ⚠️ 本文件只负责 lint，不用 ruff 做格式化：
+#    ruff 的 formatter 是 Black 系，签名超宽时固定退化成"每行一个参数"，
+#    没有"每行多个参数、按行宽折行"这个模式。
+#    格式化交给 yapf（见仓库根的 style.yapf）。
+#    不要运行 `ruff format`，否则会把 yapf 的打包换行改回每行一个。
+
+[lint]
+# E/F/W：pycodestyle 错误、pyflakes、警告；I：import 排序
+select = ["E", "F", "W", "I"]
+# E501（行太长）交给 formatter 处理，避免 lint 与 format 互相打架
+ignore = ["E501"]
+
+[lint.isort]
+known-first-party = ["kernels", "bench", "triton_lab"]

@@ -10,7 +10,6 @@ import sys
 import stat
 import const_var
 
-
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         print(sys.argv)
@@ -33,7 +32,6 @@ if __name__ == "__main__":
             print("insert op:[", k, "] success")
         all_operators[k] = insert_operator[k]
 
-    with os.fdopen(
-        os.open(sys.argv[2], const_var.WFLAGS, const_var.WMODES), "w"
-    ) as json_file:
+    with os.fdopen(os.open(sys.argv[2], const_var.WFLAGS, const_var.WMODES),
+                   "w") as json_file:
         json_file.write(json.dumps(all_operators, indent=4))

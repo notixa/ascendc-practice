@@ -33,9 +33,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--seq", type=int, default=1000, help="S_q = S_k")
     parser.add_argument("--dtype", choices=["fp16", "bf16"], default="fp16")
-    parser.add_argument(
-        "--causal", choices=["0", "1"], default="0", help="0=非 causal, 1=causal"
-    )
+    parser.add_argument("--causal",
+                        choices=["0", "1"],
+                        default="0",
+                        help="0=非 causal, 1=causal")
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--heads", type=int, default=2)
     parser.add_argument("--head-dim", type=int, default=128)
@@ -85,27 +86,18 @@ def main(argv: list[str] | None = None) -> int:
     bk = args.block_k
 
     gen = torch.Generator(device="cpu").manual_seed(args.seed + sq * 131 + hd)
-    q = (
-        torch.randn((args.batch, sq, args.heads, hd), generator=gen)
-        .to(device=device, dtype=dtype)
-        .contiguous()
-    )
-    k = (
-        torch.randn((args.batch, sk, args.heads, hd), generator=gen)
-        .to(device=device, dtype=dtype)
-        .contiguous()
-    )
-    v = (
-        torch.randn((args.batch, sk, args.heads, hd), generator=gen)
-        .to(device=device, dtype=dtype)
-        .contiguous()
-    )
+    q = (torch.randn((args.batch, sq, args.heads, hd),
+                     generator=gen).to(device=device, dtype=dtype).contiguous())
+    k = (torch.randn((args.batch, sk, args.heads, hd),
+                     generator=gen).to(device=device, dtype=dtype).contiguous())
+    v = (torch.randn((args.batch, sk, args.heads, hd),
+                     generator=gen).to(device=device, dtype=dtype).contiguous())
 
     o = torch.empty_like(q)
-    scale = float(hd) ** -0.5
+    scale = float(hd)**-0.5
 
     cores = get_device_properties(0).cube_core_num
-    grid = (min(args.batch * args.heads * triton.cdiv(sq, bq), cores),)
+    grid = (min(args.batch * args.heads * triton.cdiv(sq, bq), cores), )
 
     print(
         f"BQ={bq} BK={bk} seq={sq} causal={int(causal)} dtype={args.dtype} grid={grid}",

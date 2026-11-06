@@ -16,6 +16,7 @@ PYF_PATH = os.path.dirname(os.path.realpath(__file__))
 
 
 class BinParamBuilder(opdesc_parser.OpDesc):
+
     def __init__(self: any, op_type: str):
         super().__init__(op_type)
         self.soc = ""
@@ -90,9 +91,8 @@ class BinParamBuilder(opdesc_parser.OpDesc):
             op_node["bin_filename"] = bin_file
             param_file = os.path.join(self.out_path, bin_file + "_param.json")
             param_file = os.path.realpath(param_file)
-            with os.fdopen(
-                os.open(param_file, const_var.WFLAGS, const_var.WMODES), "w"
-            ) as fd:
+            with os.fdopen(os.open(param_file, const_var.WFLAGS, const_var.WMODES),
+                           "w") as fd:
                 json.dump(param, fd, indent="  ")
             self._write_buld_cmd(param_file, bin_file, i)
 
@@ -103,14 +103,14 @@ class BinParamBuilder(opdesc_parser.OpDesc):
         name_com = [self.op_type, self.op_file, str(index)]
         compile_file = os.path.join(self.out_path, "-".join(name_com) + ".sh")
         compile_file = os.path.realpath(compile_file)
-        with os.fdopen(
-            os.open(compile_file, const_var.WFLAGS, const_var.WMODES), "w"
-        ) as fd:
+        with os.fdopen(os.open(compile_file, const_var.WFLAGS, const_var.WMODES),
+                       "w") as fd:
             fd.write("#!/bin/bash\n")
             fd.write('echo "[{}] Generating {} ..."\n'.format(hard_soc, bin_file))
-            cmd = const_var.BIN_CMD.format(
-                fun=self.op_intf, soc=hard_soc, param=param_file, impl='""'
-            )
+            cmd = const_var.BIN_CMD.format(fun=self.op_intf,
+                                           soc=hard_soc,
+                                           param=param_file,
+                                           impl='""')
             fd.write(cmd)
             chk = const_var.CHK_CMD.format(res_file=bin_file + ".json")
             fd.write(chk)

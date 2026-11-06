@@ -92,9 +92,8 @@ def gen_all_config(root_dir, soc):
         gen_ops_config(_json, soc, config)
     for cfg_key in config.keys():
         cfg_file = os.path.join(root_dir, cfg_key)
-        with os.fdopen(
-            os.open(cfg_file, const_var.WFLAGS, const_var.WMODES), "w"
-        ) as fd:
+        with os.fdopen(os.open(cfg_file, const_var.WFLAGS, const_var.WMODES),
+                       "w") as fd:
             json.dump(config.get(cfg_key), fd, indent="  ")
 
 
@@ -107,9 +106,11 @@ def args_prase():
         required=True,
         help="Parse the path of the json file.",
     )
-    parser.add_argument(
-        "-s", "--soc", nargs="?", required=True, help="Parse the soc_version of ops."
-    )
+    parser.add_argument("-s",
+                        "--soc",
+                        nargs="?",
+                        required=True,
+                        help="Parse the soc_version of ops.")
     return parser.parse_args()
 
 

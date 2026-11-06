@@ -51,7 +51,8 @@ VEC_OPS = r"hivm\.hir\.(vadd|vmul|vmax|vexp|vsel|vcmp|vcast|vrec|vln|vabs|vdiv|v
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__)
+    ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 description=__doc__)
     ap.add_argument("--kernel", default="fa", choices=list(KERNELS))
     ap.add_argument("--bq", type=int, default=64)
     ap.add_argument("--bk", type=int, default=512)
@@ -74,18 +75,33 @@ def main():
     outdir = os.path.join(_ROOT, ".scratch", f"irdump-{a.kernel}-{a.bq}x{a.bk}")
     shutil.rmtree(outdir, ignore_errors=True)
     os.makedirs(outdir, exist_ok=True)
-    os.environ["FA_BH2"] = f"--mlir-print-ir-after-all --mlir-print-ir-tree-dir={outdir}"
+    os.environ[
+        "FA_BH2"] = f"--mlir-print-ir-after-all --mlir-print-ir-tree-dir={outdir}"
 
     src = ir_diff.extract_kernel(os.path.join(_ROOT, KERNELS[a.kernel]))
-    ce = {"N_q": a.nq, "N_k": a.nk, "delta_qk": a.nk - a.nq,
-          "BLOCK_Q": a.bq, "BLOCK_K": a.bk, "HEAD_DIM": 128,
-          "IS_CAUSAL": True, "NVEC": a.nvec, "CHUNK": a.chunk or a.bk,
-          # 显式 GM workspace 的 stride（fa_fwd_manual.py 里标成了 tl.constexpr）
-          # 必须填，否则 build_signature 会退化成 i32 运行时参数，
-          # 编出来的 IR 就不是新版的（会重现 ×16 交叉布局）
-          "stride_sc": a.bq * a.bk, "stride_sq": a.bk, "stride_sk": 1,
-          "stride_pc": a.bq * a.bk, "stride_pq": a.bk, "stride_pk": 1,
-          "stride_otmp_c": a.bq * 128, "stride_otmp_q": 128, "stride_otmp_d": 1}
+    ce = {
+        "N_q": a.nq,
+        "N_k": a.nk,
+        "delta_qk": a.nk - a.nq,
+        "BLOCK_Q": a.bq,
+        "BLOCK_K": a.bk,
+        "HEAD_DIM": 128,
+        "IS_CAUSAL": True,
+        "NVEC": a.nvec,
+        "CHUNK": a.chunk or a.bk,
+        # 显式 GM workspace 的 stride（fa_fwd_manual.py 里标成了 tl.constexpr）
+        # 必须填，否则 build_signature 会退化成 i32 运行时参数，
+        # 编出来的 IR 就不是新版的（会重现 ×16 交叉布局）
+        "stride_sc": a.bq * a.bk,
+        "stride_sq": a.bk,
+        "stride_sk": 1,
+        "stride_pc": a.bq * a.bk,
+        "stride_pq": a.bk,
+        "stride_pk": 1,
+        "stride_otmp_c": a.bq * 128,
+        "stride_otmp_q": 128,
+        "stride_otmp_d": 1
+    }
     sig, cexpr = ir_diff.build_signature(src, ce)
 
     work = tempfile.mkdtemp(prefix="irdump_", dir=os.path.join(_ROOT, ".scratch"))
@@ -124,10 +140,14 @@ def main():
         return hits[-1] if (prefer_last and hits) else (hits[0] if hits else None)
 
     print(f"\n{'='*96}")
-    print(f"{'stage':<44}{'行数':>7}{'vec_op':>8}{'mmad':>6}{'sync_set':>10}{'sync_wait':>11}")
+    print(
+        f"{'stage':<44}{'行数':>7}{'vec_op':>8}{'mmad':>6}{'sync_set':>10}{'sync_wait':>11}"
+    )
     print("-" * 96)
-    targets = ["partition-and-bind-sub-block", "hivm-bind-sub-block",
-               "inject-block-sync", "hivm-plan-memory"]
+    targets = [
+        "partition-and-bind-sub-block", "hivm-bind-sub-block", "inject-block-sync",
+        "hivm-plan-memory"
+    ]
     for t in targets:
         f = pick(t)
         if not f:
@@ -145,8 +165,10 @@ def main():
         txt = open(part).read()
         print(f"\n① 子核切分：core_type 标记 {len(re.findall(r'core_type = <', txt))} 处"
               f"，sub_block_id {len(re.findall(r'sub_block_id', txt))} 处")
-        print(f"   vector op {len(re.findall(VEC_OPS, txt))} 个 —— "
-              f"{'✅ 已按子块分裂（每个 op 出现 2 份或带 sub_block_id）' if len(re.findall('sub_block_id', txt)) else '❌ 未分裂（每个 op 只有一份，无 sub_block_id）'}")
+        print(
+            f"   vector op {len(re.findall(VEC_OPS, txt))} 个 —— "
+            f"{'✅ 已按子块分裂（每个 op 出现 2 份或带 sub_block_id）' if len(re.findall('sub_block_id', txt)) else '❌ 未分裂（每个 op 只有一份，无 sub_block_id）'}"
+        )
         core = re.findall(r"core_type = <([A-Z]+)>", txt)
         from collections import Counter
         print(f"   core_type 分布: {dict(Counter(core))}")

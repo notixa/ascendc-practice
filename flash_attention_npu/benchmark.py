@@ -34,13 +34,11 @@ try:
 except Exception:
     HAS_TRI_DAO = False
 
-
 # ==============================================================================
 # 硬件物理真值规格 (Atlas 200I DK A2 / Ascend 310B4)
 # ==============================================================================
 PEAK_TFLOPS = 8.192  # 8.192 TFLOPS (FP16 Cube Peak @ 1.0 GHz, 1 AI Core)
 PEAK_BW_GBPS = 25.6  # LPDDR4X 物理显存带宽峰值 (~25.6 GB/s)
-
 
 # ==============================================================================
 # 1. 权威标杆实现库 (Authoritative Reference Baselines)
@@ -71,16 +69,18 @@ class AuthoritativeBaselines:
                 q = torch.randn(1, 1, 64, 64, dtype=torch.half, device="npu:0")
                 k = torch.randn(1, 1, 64, 64, dtype=torch.half, device="npu:0")
                 v = torch.randn(1, 1, 64, 64, dtype=torch.half, device="npu:0")
-                _ = torch_npu.npu_fusion_attention(
-                    q, k, v, head_num=1, input_layout="BNSD", scale=0.125, keep_prob=1.0
-                )
+                _ = torch_npu.npu_fusion_attention(q,
+                                                   k,
+                                                   v,
+                                                   head_num=1,
+                                                   input_layout="BNSD",
+                                                   scale=0.125,
+                                                   keep_prob=1.0)
                 torch.npu.synchronize()
-                detected.append(
-                    (
-                        "npu_fusion",
-                        "Huawei Official npu_fusion_attention (aclnnFlashAttentionScore)",
-                    )
-                )
+                detected.append((
+                    "npu_fusion",
+                    "Huawei Official npu_fusion_attention (aclnnFlashAttentionScore)",
+                ))
             except Exception:
                 pass
 
@@ -94,16 +94,14 @@ class AuthoritativeBaselines:
                     _ = F.scaled_dot_product_attention(q, k, v, scale=0.125)
                 torch.npu.synchronize()
                 detected.append(
-                    ("sdpa", "PyTorch Official F.scaled_dot_product_attention (SDPA)")
-                )
+                    ("sdpa", "PyTorch Official F.scaled_dot_product_attention (SDPA)"))
             except Exception:
                 pass
 
         # 3. 探测 Tri Dao flash_attn
         if HAS_TRI_DAO:
             detected.append(
-                ("tri_dao", "Tri Dao Official flash-attention (flash_attn_func)")
-            )
+                ("tri_dao", "Tri Dao Official flash-attention (flash_attn_func)"))
 
         # 4. 保底基线：PyTorch 原生注意力 (标准 Matmul + Softmax)
         detected.append(("naive", "PyTorch Naive Unfused Attention (Matmul + Softmax)"))
@@ -173,8 +171,7 @@ class AuthoritativeBaselines:
             return dq, dk, dv
         else:
             raise NotImplementedError(
-                "torch_npu.npu_fusion_attention_grad not available"
-            )
+                "torch_npu.npu_fusion_attention_grad not available")
 
     @staticmethod
     def run_sdpa_fwd(q, k, v, scale, heads=1):
@@ -309,9 +306,14 @@ def compute_effective_bandwidth(N_q, N_k, d, heads, time_ms, is_bwd=False):
 # ==============================================================================
 
 
-def benchmark_shape(
-    N_q, N_k, d, heads, primary_baseline_key, warmup=5, iters=15, include_bwd=True
-):
+def benchmark_shape(N_q,
+                    N_k,
+                    d,
+                    heads,
+                    primary_baseline_key,
+                    warmup=5,
+                    iters=15,
+                    include_bwd=True):
     device = "npu:0" if HAS_NPU else "cpu"
     scale = 1.0 / (d**0.5)
 
@@ -341,41 +343,42 @@ def benchmark_shape(
     custom_fwd_head_ms = custom_fwd_ms / heads
     custom_fwd_tflops = compute_tflops(N_q, N_k, d, heads, custom_fwd_ms, is_bwd=False)
     custom_fwd_mfu = (custom_fwd_tflops / PEAK_TFLOPS) * 100.0
-    custom_fwd_bw = compute_effective_bandwidth(
-        N_q, N_k, d, heads, custom_fwd_ms, is_bwd=False
-    )
+    custom_fwd_bw = compute_effective_bandwidth(N_q,
+                                                N_k,
+                                                d,
+                                                heads,
+                                                custom_fwd_ms,
+                                                is_bwd=False)
     custom_fwd_mem_mb = measure_memory_mb(custom_fwd_fn, device=device)
 
     # 2. 权威标杆实现耗时 (根据 primary_baseline_key 路由)
     if primary_baseline_key == "npu_fusion":
         auth_fwd_fn = lambda: AuthoritativeBaselines.run_npu_fusion_fwd(
-            q, k, v, scale, heads=heads
-        )
+            q, k, v, scale, heads=heads)
         auth_fwd_stat = measure_latency_ms(auth_fwd_fn, warmup=warmup, iters=iters)
         auth_fwd_ms = auth_fwd_stat["median"]
         naive_fwd_fn = lambda: AuthoritativeBaselines.run_naive_fwd(q, k, v, scale)
-        naive_fwd_stat = measure_latency_ms(
-            naive_fwd_fn, warmup=naive_warmup, iters=naive_iters
-        )
+        naive_fwd_stat = measure_latency_ms(naive_fwd_fn,
+                                            warmup=naive_warmup,
+                                            iters=naive_iters)
         naive_fwd_ms = naive_fwd_stat["median"]
         naive_fwd_mem_mb = measure_memory_mb(naive_fwd_fn, device=device)
     elif primary_baseline_key == "sdpa":
         auth_fwd_fn = lambda: AuthoritativeBaselines.run_sdpa_fwd(
-            q, k, v, scale, heads=heads
-        )
+            q, k, v, scale, heads=heads)
         auth_fwd_stat = measure_latency_ms(auth_fwd_fn, warmup=warmup, iters=iters)
         auth_fwd_ms = auth_fwd_stat["median"]
         naive_fwd_fn = lambda: AuthoritativeBaselines.run_naive_fwd(q, k, v, scale)
-        naive_fwd_stat = measure_latency_ms(
-            naive_fwd_fn, warmup=naive_warmup, iters=naive_iters
-        )
+        naive_fwd_stat = measure_latency_ms(naive_fwd_fn,
+                                            warmup=naive_warmup,
+                                            iters=naive_iters)
         naive_fwd_ms = naive_fwd_stat["median"]
         naive_fwd_mem_mb = measure_memory_mb(naive_fwd_fn, device=device)
     else:
         auth_fwd_fn = lambda: AuthoritativeBaselines.run_naive_fwd(q, k, v, scale)
-        auth_fwd_stat = measure_latency_ms(
-            auth_fwd_fn, warmup=naive_warmup, iters=naive_iters
-        )
+        auth_fwd_stat = measure_latency_ms(auth_fwd_fn,
+                                           warmup=naive_warmup,
+                                           iters=naive_iters)
         auth_fwd_ms = auth_fwd_stat["median"]
         naive_fwd_ms = auth_fwd_ms
         naive_fwd_mem_mb = measure_memory_mb(auth_fwd_fn, device=device)
@@ -411,77 +414,75 @@ def benchmark_shape(
         o_c, l_c = flash_attention_npu.forward(q, k, v, scale)
         if HAS_NPU:
             torch.npu.synchronize()
-        custom_bwd_fn = lambda: flash_attention_npu.backward(
-            do, q, k, v, o_c, l_c, scale
-        )
+        custom_bwd_fn = lambda: flash_attention_npu.backward(do, q, k, v, o_c, l_c,
+                                                             scale)
 
         custom_bwd_stat = measure_latency_ms(custom_bwd_fn, warmup=warmup, iters=iters)
         custom_bwd_ms = custom_bwd_stat["median"]
         custom_bwd_head_ms = custom_bwd_ms / heads
-        custom_bwd_tflops = compute_tflops(
-            N_q, N_k, d, heads, custom_bwd_ms, is_bwd=True
-        )
+        custom_bwd_tflops = compute_tflops(N_q,
+                                           N_k,
+                                           d,
+                                           heads,
+                                           custom_bwd_ms,
+                                           is_bwd=True)
         custom_bwd_mfu = (custom_bwd_tflops / PEAK_TFLOPS) * 100.0
-        custom_bwd_bw = compute_effective_bandwidth(
-            N_q, N_k, d, heads, custom_bwd_ms, is_bwd=True
-        )
+        custom_bwd_bw = compute_effective_bandwidth(N_q,
+                                                    N_k,
+                                                    d,
+                                                    heads,
+                                                    custom_bwd_ms,
+                                                    is_bwd=True)
 
         # 标杆反向
         if primary_baseline_key == "npu_fusion":
             try:
                 auth_bwd_fn = lambda: AuthoritativeBaselines.run_npu_fusion_bwd(
-                    q, k, v, do, scale, heads=heads
-                )
-                auth_bwd_stat = measure_latency_ms(
-                    auth_bwd_fn, warmup=warmup, iters=iters
-                )
+                    q, k, v, do, scale, heads=heads)
+                auth_bwd_stat = measure_latency_ms(auth_bwd_fn,
+                                                   warmup=warmup,
+                                                   iters=iters)
                 auth_bwd_ms = auth_bwd_stat["median"]
             except Exception:
                 auth_bwd_fn = lambda: AuthoritativeBaselines.run_naive_bwd(
-                    q, k, v, do, scale
-                )
-                auth_bwd_stat = measure_latency_ms(
-                    auth_bwd_fn, warmup=naive_warmup, iters=naive_iters
-                )
+                    q, k, v, do, scale)
+                auth_bwd_stat = measure_latency_ms(auth_bwd_fn,
+                                                   warmup=naive_warmup,
+                                                   iters=naive_iters)
                 auth_bwd_ms = auth_bwd_stat["median"]
             naive_bwd_fn = lambda: AuthoritativeBaselines.run_naive_bwd(
-                q, k, v, do, scale
-            )
-            naive_bwd_stat = measure_latency_ms(
-                naive_bwd_fn, warmup=naive_warmup, iters=naive_iters
-            )
+                q, k, v, do, scale)
+            naive_bwd_stat = measure_latency_ms(naive_bwd_fn,
+                                                warmup=naive_warmup,
+                                                iters=naive_iters)
             naive_bwd_ms = naive_bwd_stat["median"]
         elif primary_baseline_key == "sdpa":
             try:
                 auth_bwd_fn = lambda: AuthoritativeBaselines.run_sdpa_bwd(
-                    q, k, v, do, scale, heads=heads
-                )
-                auth_bwd_stat = measure_latency_ms(
-                    auth_bwd_fn, warmup=warmup, iters=iters
-                )
+                    q, k, v, do, scale, heads=heads)
+                auth_bwd_stat = measure_latency_ms(auth_bwd_fn,
+                                                   warmup=warmup,
+                                                   iters=iters)
                 auth_bwd_ms = auth_bwd_stat["median"]
             except Exception:
                 auth_bwd_fn = lambda: AuthoritativeBaselines.run_naive_bwd(
-                    q, k, v, do, scale
-                )
-                auth_bwd_stat = measure_latency_ms(
-                    auth_bwd_fn, warmup=naive_warmup, iters=naive_iters
-                )
+                    q, k, v, do, scale)
+                auth_bwd_stat = measure_latency_ms(auth_bwd_fn,
+                                                   warmup=naive_warmup,
+                                                   iters=naive_iters)
                 auth_bwd_ms = auth_bwd_stat["median"]
             naive_bwd_fn = lambda: AuthoritativeBaselines.run_naive_bwd(
-                q, k, v, do, scale
-            )
-            naive_bwd_stat = measure_latency_ms(
-                naive_bwd_fn, warmup=naive_warmup, iters=naive_iters
-            )
+                q, k, v, do, scale)
+            naive_bwd_stat = measure_latency_ms(naive_bwd_fn,
+                                                warmup=naive_warmup,
+                                                iters=naive_iters)
             naive_bwd_ms = naive_bwd_stat["median"]
         else:
             auth_bwd_fn = lambda: AuthoritativeBaselines.run_naive_bwd(
-                q, k, v, do, scale
-            )
-            auth_bwd_stat = measure_latency_ms(
-                auth_bwd_fn, warmup=naive_warmup, iters=naive_iters
-            )
+                q, k, v, do, scale)
+            auth_bwd_stat = measure_latency_ms(auth_bwd_fn,
+                                               warmup=naive_warmup,
+                                               iters=naive_iters)
             auth_bwd_ms = auth_bwd_stat["median"]
             naive_bwd_ms = auth_bwd_ms
 
@@ -489,22 +490,20 @@ def benchmark_shape(
         auth_bwd_tflops = compute_tflops(N_q, N_k, d, heads, auth_bwd_ms, is_bwd=True)
         naive_bwd_head_ms = naive_bwd_ms / heads
 
-        row_data.update(
-            {
-                "custom_bwd_ms": custom_bwd_ms,
-                "custom_bwd_head_ms": custom_bwd_head_ms,
-                "auth_bwd_ms": auth_bwd_ms,
-                "auth_bwd_head_ms": auth_bwd_head_ms,
-                "naive_bwd_ms": naive_bwd_ms,
-                "naive_bwd_head_ms": naive_bwd_head_ms,
-                "bwd_ratio_vs_auth": auth_bwd_ms / max(custom_bwd_ms, 1e-6),
-                "bwd_speedup_vs_naive": naive_bwd_ms / max(custom_bwd_ms, 1e-6),
-                "custom_bwd_tflops": custom_bwd_tflops,
-                "custom_bwd_mfu": custom_bwd_mfu,
-                "custom_bwd_bw": custom_bwd_bw,
-                "auth_bwd_tflops": auth_bwd_tflops,
-            }
-        )
+        row_data.update({
+            "custom_bwd_ms": custom_bwd_ms,
+            "custom_bwd_head_ms": custom_bwd_head_ms,
+            "auth_bwd_ms": auth_bwd_ms,
+            "auth_bwd_head_ms": auth_bwd_head_ms,
+            "naive_bwd_ms": naive_bwd_ms,
+            "naive_bwd_head_ms": naive_bwd_head_ms,
+            "bwd_ratio_vs_auth": auth_bwd_ms / max(custom_bwd_ms, 1e-6),
+            "bwd_speedup_vs_naive": naive_bwd_ms / max(custom_bwd_ms, 1e-6),
+            "custom_bwd_tflops": custom_bwd_tflops,
+            "custom_bwd_mfu": custom_bwd_mfu,
+            "custom_bwd_bw": custom_bwd_bw,
+            "auth_bwd_tflops": auth_bwd_tflops,
+        })
 
     return row_data
 
@@ -522,11 +521,8 @@ def print_benchmark_comparison_table(results, baseline_name, heads=1, include_bw
     print(
         f" Target Device: Ascend 310B4 (Atlas 200I DK A2) | FP16 Peak: {PEAK_TFLOPS} TFLOPS | Memory Bandwidth Peak: {PEAK_BW_GBPS} GB/s"
     )
-    mode_str = (
-        f"Multi-Head (H = {heads} heads)"
-        if heads > 1
-        else "Micro-Benchmark (Single Head H = 1)"
-    )
+    mode_str = (f"Multi-Head (H = {heads} heads)"
+                if heads > 1 else "Micro-Benchmark (Single Head H = 1)")
     print(f" Evaluation Mode: {mode_str} | Primary Baseline: {baseline_name}")
     print("=" * 132)
 
@@ -535,23 +531,8 @@ def print_benchmark_comparison_table(results, baseline_name, heads=1, include_bw
             f"| {'Shape (N_q, N_k, d)':<20} | {'Per-Head Fwd (ms)':<18} "
             f"| {'vs. Baseline':<14} | {'vs. Naive':<14} | {'Our TFLOPS':<12} | {'MFU (%)':<10} | {'Bandwidth (GB/s)':<18} |"
         )
-        sep = (
-            "|"
-            + "-" * 22
-            + "|"
-            + "-" * 20
-            + "|"
-            + "-" * 16
-            + "|"
-            + "-" * 16
-            + "|"
-            + "-" * 14
-            + "|"
-            + "-" * 12
-            + "|"
-            + "-" * 20
-            + "|"
-        )
+        sep = ("|" + "-" * 22 + "|" + "-" * 20 + "|" + "-" * 16 + "|" + "-" * 16 + "|" +
+               "-" * 14 + "|" + "-" * 12 + "|" + "-" * 20 + "|")
         print(header)
         print(sep)
         for r in results:
@@ -568,23 +549,8 @@ def print_benchmark_comparison_table(results, baseline_name, heads=1, include_bw
             f"| {'Shape (N_q, N_k, d)':<18} | {'Per-Head Fwd (ms)':<18} | {'Per-Head Bwd (ms)':<18} "
             f"| {'Speedup (F/B)':<15} | {'Our TFLOPS (F/B)':<18} | {'MFU % (F/B)':<16} | {'Bandwidth (GB/s)':<18} |"
         )
-        sep = (
-            "|"
-            + "-" * 20
-            + "|"
-            + "-" * 20
-            + "|"
-            + "-" * 20
-            + "|"
-            + "-" * 17
-            + "|"
-            + "-" * 20
-            + "|"
-            + "-" * 18
-            + "|"
-            + "-" * 20
-            + "|"
-        )
+        sep = ("|" + "-" * 20 + "|" + "-" * 20 + "|" + "-" * 20 + "|" + "-" * 17 + "|" +
+               "-" * 20 + "|" + "-" * 18 + "|" + "-" * 20 + "|")
         print(header)
         print(sep)
         for r in results:
@@ -592,8 +558,7 @@ def print_benchmark_comparison_table(results, baseline_name, heads=1, include_bw
             fwd_str = f"{r['custom_fwd_head_ms']:.3f} / {r['auth_fwd_head_ms']:.3f}"
             bwd_str = f"{r['custom_bwd_head_ms']:.3f} / {r['auth_bwd_head_ms']:.3f}"
             speedup_str = (
-                f"{r['fwd_ratio_vs_auth']:.2f}x / {r['bwd_ratio_vs_auth']:.2f}x"
-            )
+                f"{r['fwd_ratio_vs_auth']:.2f}x / {r['bwd_ratio_vs_auth']:.2f}x")
             tflops_str = f"{r['custom_fwd_tflops']:.2f} / {r['custom_bwd_tflops']:.2f}"
             mfu_str = f"{r['custom_fwd_mfu']:.1f}% / {r['custom_bwd_mfu']:.1f}%"
             bw_str = f"{r['custom_fwd_bw']:.1f} / {r['custom_bwd_bw']:.1f}"
@@ -605,9 +570,7 @@ def print_benchmark_comparison_table(results, baseline_name, heads=1, include_bw
 
     print("=" * 132)
     print("指标解读指南:")
-    print(
-        "  1. Per-Head Latency (Our / Off): 每头等效耗时 (总批次耗时 / Heads)，反映真实大模型推理流水线吞吐."
-    )
+    print("  1. Per-Head Latency (Our / Off): 每头等效耗时 (总批次耗时 / Heads)，反映真实大模型推理流水线吞吐.")
     print("  2. Speedup (F/B): 相较于基准实现的端到端加速倍率 (>= 1.0x 表示更快).")
     print("  3. Our TFLOPS (F/B): 自定义算子在昇腾 NPU 上压榨出的实际浮点计算吞吐.")
     print(
@@ -617,9 +580,8 @@ def print_benchmark_comparison_table(results, baseline_name, heads=1, include_bw
         f"  5. Bandwidth (GB/s): 有效全局显存读写带宽，对比 Atlas 200I DK A2 LPDDR4X 物理峰值 ({PEAK_BW_GBPS} GB/s).\n"
     )
 
-    has_mem = any(
-        "custom_mem_mb" in r and r.get("naive_mem_mb", 0.0) > 0 for r in results
-    )
+    has_mem = any("custom_mem_mb" in r and r.get("naive_mem_mb", 0.0) > 0
+                  for r in results)
     if has_mem:
         print("=" * 132)
         print(
@@ -628,21 +590,9 @@ def print_benchmark_comparison_table(results, baseline_name, heads=1, include_bw
         print("=" * 132)
         mem_hdr = (
             f"| {'Shape (N_q, N_k, d)':<20} | {'FlashAttention (MB)':<22} | {'Naive Baseline (MB)':<22} "
-            f"| {'显存削减比例 (节省倍率)':<24} | {'长序列吞吐剪刀差 (Fwd加速比)':<28} |"
-        )
-        mem_sep = (
-            "|"
-            + "-" * 22
-            + "|"
-            + "-" * 24
-            + "|"
-            + "-" * 24
-            + "|"
-            + "-" * 26
-            + "|"
-            + "-" * 30
-            + "|"
-        )
+            f"| {'显存削减比例 (节省倍率)':<24} | {'长序列吞吐剪刀差 (Fwd加速比)':<28} |")
+        mem_sep = ("|" + "-" * 22 + "|" + "-" * 24 + "|" + "-" * 24 + "|" + "-" * 26 +
+                   "|" + "-" * 30 + "|")
         print(mem_hdr)
         print(mem_sep)
         for r in results:
@@ -652,39 +602,33 @@ def print_benchmark_comparison_table(results, baseline_name, heads=1, include_bw
             ratio = r.get("mem_ratio", 1.0)
             ratio_str = f"{ratio:.2f}x 显存降低" if ratio >= 1.0 else f"{ratio:.2f}x"
             speedup = f"{r['fwd_speedup_vs_naive']:.2f}x 提速"
-            print(
-                f"| {shape_str:<20} | {our_mem:>22} | {naive_mem:>22} "
-                f"| {ratio_str:>24} | {speedup:>28} |"
-            )
+            print(f"| {shape_str:<20} | {our_mem:>22} | {naive_mem:>22} "
+                  f"| {ratio_str:>24} | {speedup:>28} |")
         print("=" * 132)
         print("剪刀差机制深度剖析:")
-        print(
-            "  - Naive Attention 显存复杂度为 O(N^2)，中间注意力矩阵与反向中间态必须完整实体化并写入物理显存。"
-        )
+        print("  - Naive Attention 显存复杂度为 O(N^2)，中间注意力矩阵与反向中间态必须完整实体化并写入物理显存。")
         print(
             "    在 Atlas 200I DK A2 边缘设备 (3.5GB 共享内存) 上，N >= 1024 会造成物理显存严重颠簸与页面换入换出，耗时暴增至数十秒。"
         )
         print(
             "  - FlashAttention 显存复杂度为严格常数级 O(N)，仅在片上 SRAM (AI Core UB) 维持 64x64 微块计算，无需中间矩阵落盘。"
         )
-        print(
-            "    在 N=1024~2048 场景下，FlashAttention 展现出高阶统治级性能，带来数十到数百倍加速！\n"
-        )
+        print("    在 N=1024~2048 场景下，FlashAttention 展现出高阶统治级性能，带来数十到数百倍加速！\n")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Ascend C FlashAttention vs. Authoritative Reference Benchmark"
-    )
+        description="Ascend C FlashAttention vs. Authoritative Reference Benchmark")
     parser.add_argument(
         "--heads",
         type=int,
         default=8,
         help="Number of attention heads (default: 8, set to 1 for micro single-head)",
     )
-    parser.add_argument(
-        "--warmup", type=int, default=5, help="Number of warmup iterations (default: 5)"
-    )
+    parser.add_argument("--warmup",
+                        type=int,
+                        default=5,
+                        help="Number of warmup iterations (default: 5)")
     parser.add_argument(
         "--iters",
         type=int,
@@ -696,9 +640,10 @@ def main():
         action="store_true",
         help="Skip backward benchmark and evaluate forward only",
     )
-    parser.add_argument(
-        "--device", type=int, default=0, help="NPU device id (default: 0)"
-    )
+    parser.add_argument("--device",
+                        type=int,
+                        default=0,
+                        help="NPU device id (default: 0)")
     parser.add_argument(
         "--baseline",
         type=str,
@@ -771,12 +716,10 @@ def main():
             (512, 512, 64),
         ]
         if args.long_seq:
-            benchmark_shapes.extend(
-                [
-                    (1024, 1024, 64),
-                    (2048, 2048, 64),
-                ]
-            )
+            benchmark_shapes.extend([
+                (1024, 1024, 64),
+                (2048, 2048, 64),
+            ])
 
     results = []
     for nq, nk, d in benchmark_shapes:
@@ -807,9 +750,10 @@ def main():
                 torch.npu.empty_cache()
 
     if results:
-        print_benchmark_comparison_table(
-            results, primary_desc, heads=args.heads, include_bwd=not args.no_bwd
-        )
+        print_benchmark_comparison_table(results,
+                                         primary_desc,
+                                         heads=args.heads,
+                                         include_bwd=not args.no_bwd)
 
 
 if __name__ == "__main__":

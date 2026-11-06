@@ -62,6 +62,7 @@ def build_kernel_with_cmake():
 
 
 class CustomBuildExtension(BuildExtension):
+
     def run(self):
         if (CURRENT_DIR / "CMakeLists.txt").exists():
             build_kernel_with_cmake()

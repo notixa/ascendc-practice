@@ -44,8 +44,7 @@ def run_test_case(name, M, K, N, negative_slope=0.01, atol=2e-3, rtol=1e-3):
     status = "PASS" if passed else "FAIL"
     shape_str = f"[{M}, {K}] x [{K}, {N}] (slope={negative_slope})"
     print(
-        f"{name:<45} | {shape_str:<32} | Max Diff: {max_diff:8.6f} | Status: {status}"
-    )
+        f"{name:<45} | {shape_str:<32} | Max Diff: {max_diff:8.6f} | Status: {status}")
     if not passed:
         print(f"  [FAIL DETAILS] Custom sample: {c_custom_cpu[0, :5].tolist()}")
         print(f"                 Golden sample: {c_golden_cpu[0, :5].tolist()}")

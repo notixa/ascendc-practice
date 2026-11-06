@@ -152,13 +152,12 @@ def run_case(b, h, nq, nk, d, test_naive=True):
         else:
             try:
                 fn_naive_fwd = lambda: torch.matmul(
-                    F.softmax(torch.matmul(q, k.transpose(-1, -2)) * scale, dim=-1), v
-                )
+                    F.softmax(torch.matmul(q, k.transpose(-1, -2)) * scale, dim=-1), v)
                 # 自适应迭代轮次
                 iters_n = 1 if nq >= 1024 else 5
-                stat_n_fwd = time_sync(
-                    fn_naive_fwd, warmup=1 if nq < 1024 else 0, iters=iters_n
-                )
+                stat_n_fwd = time_sync(fn_naive_fwd,
+                                       warmup=1 if nq < 1024 else 0,
+                                       iters=iters_n)
                 t_n_fwd = stat_n_fwd["median"]
                 mem_n_fwd = get_peak_memory(fn_naive_fwd)
                 speedup_fwd = t_n_fwd / max(t_c_fwd, 1e-5)
@@ -190,9 +189,9 @@ def run_case(b, h, nq, nk, d, test_naive=True):
                         )
                         out.backward(do)
 
-                    stat_n_bwd = time_sync(
-                        fn_naive_bwd, warmup=0, iters=1 if nq >= 1024 else 3
-                    )
+                    stat_n_bwd = time_sync(fn_naive_bwd,
+                                           warmup=0,
+                                           iters=1 if nq >= 1024 else 3)
                     t_n_bwd = stat_n_bwd["median"]
                     speedup_bwd = t_n_bwd / max(t_c_bwd, 1e-5)
                     print(
@@ -257,23 +256,8 @@ if __name__ == "__main__":
     print(
         f"| {'Case Config':<24} | {'FA Fwd (ms)':<12} | {'Naive Fwd (ms)':<15} | {'Fwd Speedup':<12} | {'FA Bwd (ms)':<12} | {'FA TFLOPS':<10} | {'Mem Cut':<10} |"
     )
-    print(
-        "|"
-        + "-" * 26
-        + "|"
-        + "-" * 14
-        + "|"
-        + "-" * 17
-        + "|"
-        + "-" * 14
-        + "|"
-        + "-" * 14
-        + "|"
-        + "-" * 12
-        + "|"
-        + "-" * 12
-        + "|"
-    )
+    print("|" + "-" * 26 + "|" + "-" * 14 + "|" + "-" * 17 + "|" + "-" * 14 + "|" +
+          "-" * 14 + "|" + "-" * 12 + "|" + "-" * 12 + "|")
     for r in all_res:
         cfg = f"B={r['b']} H={r['h']} N={r['nq']}"
         fwd_c = f"{r['t_c_fwd']:.2f}"
@@ -281,9 +265,8 @@ if __name__ == "__main__":
         sp_fwd = f"{r['speedup_fwd']:.2f}x" if r["speedup_fwd"] > 0 else "N/A"
         bwd_c = f"{r['t_c_bwd']:.2f}"
         tflops = f"{r['tflops_fwd']:.2f}"
-        mem_cut = (
-            f"{r['mem_n'] / max(r['mem_c'], 0.01):.1f}x" if r["mem_n"] > 0 else "N/A"
-        )
+        mem_cut = (f"{r['mem_n'] / max(r['mem_c'], 0.01):.1f}x"
+                   if r["mem_n"] > 0 else "N/A")
         print(
             f"| {cfg:<24} | {fwd_c:<12} | {fwd_n:<15} | {sp_fwd:<12} | {bwd_c:<12} | {tflops:<10} | {mem_cut:<10} |"
         )

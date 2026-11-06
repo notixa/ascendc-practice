@@ -26,7 +26,7 @@ def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
     if b == 1 and h == 1:
         shape_q = (nq, d)
         shape_k = (nk, d)
-        shape_l = (nq,)
+        shape_l = (nq, )
     elif b == 1:
         shape_q = (h, nq, d)
         shape_k = (h, nk, d)
@@ -94,9 +94,8 @@ def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
     bwd_res = {}
     if check_bwd:
         t0 = time.time()
-        dq_c, dk_c, dv_c = flash_attention_npu.backward(
-            do_npu, q_npu, k_npu, v_npu, o_c, l_c, scale
-        )
+        dq_c, dk_c, dv_c = flash_attention_npu.backward(do_npu, q_npu, k_npu, v_npu,
+                                                        o_c, l_c, scale)
         torch.npu.synchronize()
         t_bwd = (time.time() - t0) * 1000
 
@@ -119,11 +118,8 @@ def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
             f"  dV -> Max Diff: {diff_dv.max().item():.5f}, Mean Diff: {diff_dv.mean().item():.5f}"
         )
 
-        bwd_pass = (
-            diff_dq.max().item() < 0.03
-            and diff_dk.max().item() < 0.03
-            and diff_dv.max().item() < 0.03
-        )
+        bwd_pass = (diff_dq.max().item() < 0.03 and diff_dk.max().item() < 0.03
+                    and diff_dv.max().item() < 0.03)
         bwd_res = {
             "dq_max": diff_dq.max().item(),
             "dk_max": diff_dk.max().item(),
@@ -132,12 +128,8 @@ def evaluate_accuracy(name, b, h, nq, nk, d, check_bwd=True):
             "t_bwd": t_bwd,
         }
 
-    fwd_pass = (
-        diff_o.max().item() < 0.02
-        and diff_l.max().item() < 0.02
-        and not has_nan_o
-        and not has_inf_o
-    )
+    fwd_pass = (diff_o.max().item() < 0.02 and diff_l.max().item() < 0.02
+                and not has_nan_o and not has_inf_o)
 
     verdict = fwd_pass and (bwd_res.get("bwd_pass", True))
     print(
@@ -192,9 +184,7 @@ if __name__ == "__main__":
     for r in results:
         bwd_str = (
             f"{r.get('dq_max', 0):.4f}/{r.get('dk_max', 0):.4f}/{r.get('dv_max', 0):.4f}"
-            if "dq_max" in r
-            else "N/A"
-        )
+            if "dq_max" in r else "N/A")
         pass_str = "PASS" if (r["fwd_pass"] and r.get("bwd_pass", True)) else "FAIL"
         if pass_str == "FAIL":
             all_ok = False

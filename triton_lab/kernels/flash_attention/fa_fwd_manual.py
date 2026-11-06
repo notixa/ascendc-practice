@@ -39,9 +39,7 @@ if _env_tiles:
     _TILES = [tuple(int(v) for v in t.split("x")) for t in _env_tiles.split(",") if t]
     for _bq, _bk in _TILES:
         if _bq <= 0 or _bk <= 0:
-            raise ValueError(
-                f"FAT_TILES 格式错误: {_env_tiles!r}（应为 96x128,64x128）"
-            )
+            raise ValueError(f"FAT_TILES 格式错误: {_env_tiles!r}（应为 96x128,64x128）")
 
 # 调试用：循环展开因子。AIC 有 55.5% 的时间在跑标量（循环控制 + 地址计算），
 # 展开循环能让每份工作量只付一次循环控制开销。
@@ -49,7 +47,6 @@ if _env_tiles:
 # 注意：@triton.jit 函数只能读取【标注为 tl.constexpr】的模块全局变量，
 #       否则报 "Cannot access global variable ... from within @jit'ed function"。
 _UNROLL: tl.constexpr = int(os.environ.get("FA_UNROLL", "1"))
-
 
 # ---------------------------------------------------------------------------
 # launch 级调参（直接改这个 dict，或走环境变量）
@@ -103,51 +100,17 @@ def _pick_tile(n_q, n_k):
 
 
 @triton.jit
-def fla_fwd_kernel(
-    q_ptr,
-    k_ptr,
-    v_ptr,
-    o_ptr,
-    s_ptr,
-    p_ptr,
-    otmp_ptr,
-    stride_qb,
-    stride_qq,
-    stride_qh,
-    stride_qd,
-    stride_kb,
-    stride_kk,
-    stride_kh,
-    stride_kd,
-    stride_vb,
-    stride_vk,
-    stride_vh,
-    stride_vd,
-    stride_ob,
-    stride_oq,
-    stride_oh,
-    stride_od,
-    stride_sc: tl.constexpr,
-    stride_sq: tl.constexpr,
-    stride_sk: tl.constexpr,
-    stride_pc: tl.constexpr,
-    stride_pq: tl.constexpr,
-    stride_pk: tl.constexpr,
-    stride_otmp_c: tl.constexpr,
-    stride_otmp_q: tl.constexpr,
-    stride_otmp_d: tl.constexpr,
-    batch,
-    head,
-    scale,
-    N_q: tl.constexpr,
-    N_k: tl.constexpr,
-    delta_qk: tl.constexpr,
-    BLOCK_Q: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    HEAD_DIM: tl.constexpr,
-    IS_CAUSAL: tl.constexpr,
-    NVEC: tl.constexpr,
-):
+def fla_fwd_kernel(q_ptr, k_ptr, v_ptr, o_ptr, s_ptr, p_ptr, otmp_ptr, stride_qb,
+                   stride_qq, stride_qh, stride_qd, stride_kb, stride_kk, stride_kh,
+                   stride_kd, stride_vb, stride_vk, stride_vh, stride_vd, stride_ob,
+                   stride_oq, stride_oh, stride_od, stride_sc: tl.constexpr,
+                   stride_sq: tl.constexpr, stride_sk: tl.constexpr,
+                   stride_pc: tl.constexpr, stride_pq: tl.constexpr,
+                   stride_pk: tl.constexpr, stride_otmp_c: tl.constexpr,
+                   stride_otmp_q: tl.constexpr, stride_otmp_d: tl.constexpr, batch,
+                   head, scale, N_q: tl.constexpr, N_k: tl.constexpr,
+                   delta_qk: tl.constexpr, BLOCK_Q: tl.constexpr, BLOCK_K: tl.constexpr,
+                   HEAD_DIM: tl.constexpr, IS_CAUSAL: tl.constexpr, NVEC: tl.constexpr):
     """手写 FA 前向：显式 GM workspace（S/P/OTmp）+ 可选的 AIV 子核切分。
 
     数据流与官方 triton-ascend-kernels 的 `dsa_prefill.py` 同构：
@@ -223,38 +186,33 @@ def fla_fwd_kernel(
         #             => UB  7,472,000 bits（与 fa_fwd.py 的 7,651,328 基本持平）
         # ⚠️ v2 曾用 block_ptr 却算错（o_err=0.93），真因是【漏了 k/v 的 advance】，
         #    不是 block_ptr 破坏别名分析。advance 已在下面补上。
-        s_full_bp = tl.make_block_ptr(
-            s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk), (0, 0),
-            (BLOCK_Q, BLOCK_K), (1, 0))
-        s_sub_bp = tl.make_block_ptr(
-            s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk), (row_lo, 0),
-            (BLOCK_SUB_Q, BLOCK_K), (1, 0))
-        p_full_bp = tl.make_block_ptr(
-            p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk), (0, 0),
-            (BLOCK_Q, BLOCK_K), (1, 0))
-        p_sub_bp = tl.make_block_ptr(
-            p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk), (row_lo, 0),
-            (BLOCK_SUB_Q, BLOCK_K), (1, 0))
-        otmp_full_bp = tl.make_block_ptr(
-            otmp_base, (BLOCK_Q, HEAD_DIM), (stride_otmp_q, stride_otmp_d), (0, 0),
-            (BLOCK_Q, HEAD_DIM), (1, 0))
-        otmp_sub_bp = tl.make_block_ptr(
-            otmp_base, (BLOCK_Q, HEAD_DIM), (stride_otmp_q, stride_otmp_d), (row_lo, 0),
-            (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
-        o_sub_bp = tl.make_block_ptr(
-            o_base, (N_q, HEAD_DIM), (stride_oq, stride_od),
-            (q_start_r + row_lo, 0), (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
+        s_full_bp = tl.make_block_ptr(s_base, (BLOCK_Q, BLOCK_K),
+                                      (stride_sq, stride_sk), (0, 0),
+                                      (BLOCK_Q, BLOCK_K), (1, 0))
+        s_sub_bp = tl.make_block_ptr(s_base, (BLOCK_Q, BLOCK_K), (stride_sq, stride_sk),
+                                     (row_lo, 0), (BLOCK_SUB_Q, BLOCK_K), (1, 0))
+        p_full_bp = tl.make_block_ptr(p_base, (BLOCK_Q, BLOCK_K),
+                                      (stride_pq, stride_pk), (0, 0),
+                                      (BLOCK_Q, BLOCK_K), (1, 0))
+        p_sub_bp = tl.make_block_ptr(p_base, (BLOCK_Q, BLOCK_K), (stride_pq, stride_pk),
+                                     (row_lo, 0), (BLOCK_SUB_Q, BLOCK_K), (1, 0))
+        otmp_full_bp = tl.make_block_ptr(otmp_base, (BLOCK_Q, HEAD_DIM),
+                                         (stride_otmp_q, stride_otmp_d), (0, 0),
+                                         (BLOCK_Q, HEAD_DIM), (1, 0))
+        otmp_sub_bp = tl.make_block_ptr(otmp_base, (BLOCK_Q, HEAD_DIM),
+                                        (stride_otmp_q, stride_otmp_d), (row_lo, 0),
+                                        (BLOCK_SUB_Q, HEAD_DIM), (1, 0))
+        o_sub_bp = tl.make_block_ptr(o_base, (N_q, HEAD_DIM), (stride_oq, stride_od),
+                                     (q_start_r + row_lo, 0), (BLOCK_SUB_Q, HEAD_DIM),
+                                     (1, 0))
 
         # q / k / v：只读输入，用 block_ptr 拿 boundary_check（不涉及别名问题）
-        q_block_ptr = tl.make_block_ptr(
-            q_base, (N_q, HEAD_DIM), (stride_qq, stride_qd), (q_start_r, 0),
-            (BLOCK_Q, HEAD_DIM), (1, 0))
-        k_block_ptr = tl.make_block_ptr(
-            k_base, (N_k, HEAD_DIM), (stride_kk, stride_kd), (0, 0),
-            (BLOCK_K, HEAD_DIM), (1, 0))
-        v_block_ptr = tl.make_block_ptr(
-            v_base, (N_k, HEAD_DIM), (stride_vk, stride_vd), (0, 0),
-            (BLOCK_K, HEAD_DIM), (1, 0))
+        q_block_ptr = tl.make_block_ptr(q_base, (N_q, HEAD_DIM), (stride_qq, stride_qd),
+                                        (q_start_r, 0), (BLOCK_Q, HEAD_DIM), (1, 0))
+        k_block_ptr = tl.make_block_ptr(k_base, (N_k, HEAD_DIM), (stride_kk, stride_kd),
+                                        (0, 0), (BLOCK_K, HEAD_DIM), (1, 0))
+        v_block_ptr = tl.make_block_ptr(v_base, (N_k, HEAD_DIM), (stride_vk, stride_vd),
+                                        (0, 0), (BLOCK_K, HEAD_DIM), (1, 0))
 
         # 累积量按本子核负责的行数分配
         mi = tl.full([BLOCK_SUB_Q], -1e38, dtype=tl.float32)
@@ -342,19 +300,19 @@ def fla_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal=False):
     delta_qk = N_k - N_q
 
     BLOCK_Q, BLOCK_K = _pick_tile(N_q, N_k)
-    grid = (min(batch * head * triton.cdiv(N_q, BLOCK_Q), cores),)
+    grid = (min(batch * head * triton.cdiv(N_q, BLOCK_Q), cores), )
     used_core_num = int(grid[0])
 
     # GM Buffers
-    S = torch.empty(
-        [used_core_num, BLOCK_Q, BLOCK_K], device=Q.device, dtype=torch.float16
-    )
-    P = torch.empty(
-        [used_core_num, BLOCK_Q, BLOCK_K], device=Q.device, dtype=torch.float16
-    )
-    OTmp = torch.empty(
-        [used_core_num, BLOCK_Q, head_dim], device=Q.device, dtype=torch.float32
-    )
+    S = torch.empty([used_core_num, BLOCK_Q, BLOCK_K],
+                    device=Q.device,
+                    dtype=torch.float16)
+    P = torch.empty([used_core_num, BLOCK_Q, BLOCK_K],
+                    device=Q.device,
+                    dtype=torch.float16)
+    OTmp = torch.empty([used_core_num, BLOCK_Q, head_dim],
+                       device=Q.device,
+                       dtype=torch.float32)
 
     fla_fwd_kernel[grid](
         Q,

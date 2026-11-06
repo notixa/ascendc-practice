@@ -26,6 +26,7 @@ except ImportError:
 
 
 class FlashAttentionFunction(torch.autograd.Function):
+
     @staticmethod
     def forward(ctx, q, k, v, scale=None):
         if scale is not None:
@@ -92,50 +93,47 @@ def run_test_case(name, N_q, N_k, d, scale=None, atol=2e-2, rtol=2e-2):
     # 2. 反向计算
     if scale is not None:
         dq_custom, dk_custom, dv_custom = flash_attention_npu.backward(
-            do, q, k, v, o_custom, l_custom, scale
-        )
+            do, q, k, v, o_custom, l_custom, scale)
     else:
         dq_custom, dk_custom, dv_custom = flash_attention_npu.backward(
-            do, q, k, v, o_custom, l_custom
-        )
+            do, q, k, v, o_custom, l_custom)
 
     # 3. PyTorch 原生算子作为黄金标杆 (Golden)
     o_golden, l_golden, dq_golden, dk_golden, dv_golden = golden_flash_attention(
-        q, k, v, do=do, scale=scale
-    )
+        q, k, v, do=do, scale=scale)
 
     # 4. 误差比对
-    diff_o = torch.max(
-        torch.abs(o_custom.cpu().float() - o_golden.cpu().float())
-    ).item()
-    diff_l = torch.max(
-        torch.abs(l_custom.cpu().float() - l_golden.cpu().float())
-    ).item()
-    diff_dq = torch.max(
-        torch.abs(dq_custom.cpu().float() - dq_golden.cpu().float())
-    ).item()
-    diff_dk = torch.max(
-        torch.abs(dk_custom.cpu().float() - dk_golden.cpu().float())
-    ).item()
-    diff_dv = torch.max(
-        torch.abs(dv_custom.cpu().float() - dv_golden.cpu().float())
-    ).item()
+    diff_o = torch.max(torch.abs(o_custom.cpu().float() -
+                                 o_golden.cpu().float())).item()
+    diff_l = torch.max(torch.abs(l_custom.cpu().float() -
+                                 l_golden.cpu().float())).item()
+    diff_dq = torch.max(torch.abs(dq_custom.cpu().float() -
+                                  dq_golden.cpu().float())).item()
+    diff_dk = torch.max(torch.abs(dk_custom.cpu().float() -
+                                  dk_golden.cpu().float())).item()
+    diff_dv = torch.max(torch.abs(dv_custom.cpu().float() -
+                                  dv_golden.cpu().float())).item()
 
-    passed_o = torch.allclose(
-        o_custom.cpu().float(), o_golden.cpu().float(), atol=atol, rtol=rtol
-    )
-    passed_l = torch.allclose(
-        l_custom.cpu().float(), l_golden.cpu().float(), atol=atol, rtol=rtol
-    )
-    passed_dq = torch.allclose(
-        dq_custom.cpu().float(), dq_golden.cpu().float(), atol=atol, rtol=rtol
-    )
-    passed_dk = torch.allclose(
-        dk_custom.cpu().float(), dk_golden.cpu().float(), atol=atol, rtol=rtol
-    )
-    passed_dv = torch.allclose(
-        dv_custom.cpu().float(), dv_golden.cpu().float(), atol=atol, rtol=rtol
-    )
+    passed_o = torch.allclose(o_custom.cpu().float(),
+                              o_golden.cpu().float(),
+                              atol=atol,
+                              rtol=rtol)
+    passed_l = torch.allclose(l_custom.cpu().float(),
+                              l_golden.cpu().float(),
+                              atol=atol,
+                              rtol=rtol)
+    passed_dq = torch.allclose(dq_custom.cpu().float(),
+                               dq_golden.cpu().float(),
+                               atol=atol,
+                               rtol=rtol)
+    passed_dk = torch.allclose(dk_custom.cpu().float(),
+                               dk_golden.cpu().float(),
+                               atol=atol,
+                               rtol=rtol)
+    passed_dv = torch.allclose(dv_custom.cpu().float(),
+                               dv_golden.cpu().float(),
+                               atol=atol,
+                               rtol=rtol)
 
     passed = passed_o and passed_l and passed_dq and passed_dk and passed_dv
     status = "PASS" if passed else "FAIL"
@@ -155,25 +153,19 @@ def run_test_case(name, N_q, N_k, d, scale=None, atol=2e-2, rtol=2e-2):
             print(f"    L  golden[:4]: {l_golden.cpu().float().flatten()[:4].tolist()}")
         if not passed_dq:
             print(
-                f"    dQ custom[:4]: {dq_custom.cpu().float().flatten()[:4].tolist()}"
-            )
+                f"    dQ custom[:4]: {dq_custom.cpu().float().flatten()[:4].tolist()}")
             print(
-                f"    dQ golden[:4]: {dq_golden.cpu().float().flatten()[:4].tolist()}"
-            )
+                f"    dQ golden[:4]: {dq_golden.cpu().float().flatten()[:4].tolist()}")
         if not passed_dk:
             print(
-                f"    dK custom[:4]: {dk_custom.cpu().float().flatten()[:4].tolist()}"
-            )
+                f"    dK custom[:4]: {dk_custom.cpu().float().flatten()[:4].tolist()}")
             print(
-                f"    dK golden[:4]: {dk_golden.cpu().float().flatten()[:4].tolist()}"
-            )
+                f"    dK golden[:4]: {dk_golden.cpu().float().flatten()[:4].tolist()}")
         if not passed_dv:
             print(
-                f"    dV custom[:4]: {dv_custom.cpu().float().flatten()[:4].tolist()}"
-            )
+                f"    dV custom[:4]: {dv_custom.cpu().float().flatten()[:4].tolist()}")
             print(
-                f"    dV golden[:4]: {dv_golden.cpu().float().flatten()[:4].tolist()}"
-            )
+                f"    dV golden[:4]: {dv_golden.cpu().float().flatten()[:4].tolist()}")
 
     # 5. 端到端 Autograd 测试
     q_auto = q.clone().detach().requires_grad_(True)
@@ -185,15 +177,11 @@ def run_test_case(name, N_q, N_k, d, scale=None, atol=2e-2, rtol=2e-2):
 
     passed_autograd = (
         torch.allclose(
-            q_auto.grad.cpu().float(), dq_golden.cpu().float(), atol=atol, rtol=rtol
-        )
+            q_auto.grad.cpu().float(), dq_golden.cpu().float(), atol=atol, rtol=rtol)
         and torch.allclose(
-            k_auto.grad.cpu().float(), dk_golden.cpu().float(), atol=atol, rtol=rtol
-        )
+            k_auto.grad.cpu().float(), dk_golden.cpu().float(), atol=atol, rtol=rtol)
         and torch.allclose(
-            v_auto.grad.cpu().float(), dv_golden.cpu().float(), atol=atol, rtol=rtol
-        )
-    )
+            v_auto.grad.cpu().float(), dv_golden.cpu().float(), atol=atol, rtol=rtol))
     if not passed_autograd:
         print(f"  [WARN] Autograd wrapper check failed for {name}")
         passed = False
@@ -239,9 +227,7 @@ def main():
 
     print("=" * 125)
     if all_passed:
-        print(
-            "🎉 All FlashAttention Forward & Backward Test Cases Passed Successfully!"
-        )
+        print("🎉 All FlashAttention Forward & Backward Test Cases Passed Successfully!")
     else:
         print("❌ Some test cases failed. Please inspect logs above.")
         sys.exit(1)

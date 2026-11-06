@@ -63,7 +63,6 @@ for p in (_ROOT, os.path.join(_ROOT, "triton_lab"), _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-
 # ── 正确性用的小 case（N=4096 的 golden 太占内存，只用来计时）─────────────────
 CORRECTNESS_CASES = [
     (1, 512, 8, True),
@@ -77,17 +76,15 @@ O_ERR_TOL = 2e-2
 def parse_args():
     ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                                  description=__doc__)
-    ap.add_argument("--nw", default="2,4,8",
-                    help="num_warps 候选，逗号分隔（默认 2,4,8）")
-    ap.add_argument("--ns", default="1,2,3",
-                    help="num_stages 候选的 launch 级取值（默认 1,2,3）")
-    ap.add_argument("--mb", default="1",
-                    help="multibuffer 候选（默认 1=True；写 1,0 两组都测）")
-    ap.add_argument("--extra", action="append", default=[],
+    ap.add_argument("--nw", default="2,4,8", help="num_warps 候选，逗号分隔（默认 2,4,8）")
+    ap.add_argument("--ns", default="1,2,3", help="num_stages 候选的 launch 级取值（默认 1,2,3）")
+    ap.add_argument("--mb", default="1", help="multibuffer 候选（默认 1=True；写 1,0 两组都测）")
+    ap.add_argument("--extra",
+                    action="append",
+                    default=[],
                     metavar="KEY=VAL",
                     help="额外固定 kwarg，可重复。值按 int/bool/str 自动解析")
-    ap.add_argument("--tiles", default=None,
-                    help="强制 tile，如 64x256（等价于 FAT_TILES）")
+    ap.add_argument("--tiles", default=None, help="强制 tile，如 64x256（等价于 FAT_TILES）")
     ap.add_argument("--no-perf", action="store_true", help="只做正确性，不计时")
     ap.add_argument("--iters", type=int, default=20, help="每次采样内层迭代数")
     ap.add_argument("--reps", type=int, default=5, help="采样次数（取中位数）")
@@ -117,14 +114,14 @@ def _golden(q, causal):
     import torch  # 局部导入：脚本顶层不 import torch，避免 --help 时初始化 NPU driver
 
     n = q.shape[1]
-    qf = q.float().permute(0, 2, 1, 3)              # [b,h,n,d]
-    s = qf @ qf.transpose(-1, -2) * (q.shape[3] ** -0.5)
+    qf = q.float().permute(0, 2, 1, 3)  # [b,h,n,d]
+    s = qf @ qf.transpose(-1, -2) * (q.shape[3]**-0.5)
     if causal:
         # 与 kernel 的 `k_idx <= q_idx + delta_qk` 一致；delta_qk=0（N_q==N_k）
         m = torch.tril(torch.ones(n, n, device=q.device, dtype=torch.bool))
         s = s.masked_fill(~m, float("-inf"))
     ref = torch.softmax(s, -1) @ qf
-    return ref.permute(0, 2, 1, 3)                  # [b,n,h,d]
+    return ref.permute(0, 2, 1, 3)  # [b,n,h,d]
 
 
 def main():
@@ -161,10 +158,16 @@ def main():
 
     fn = fa.fla_fwd
     print(f"\n{'='*92}")
-    print(f"tune_launch: {len(combos)} 个配置 | 设备 cube 核数 {n_cores} | "
-          f"tile={'FAT_TILES 强制 ' + os.environ['FAT_TILES'] if args.tiles else '自动 _pick_tile'}")
-    print(f"正确性 case: {[(f'N{n}', 'causal' if c else 'full') for _, n, _, c in CORRECTNESS_CASES]}")
-    print(f"性能   case: B{PERF_CASE[0]} N{PERF_CASE[1]} H{PERF_CASE[2]} causal={PERF_CASE[3]}")
+    print(
+        f"tune_launch: {len(combos)} 个配置 | 设备 cube 核数 {n_cores} | "
+        f"tile={'FAT_TILES 强制 ' + os.environ['FAT_TILES'] if args.tiles else '自动 _pick_tile'}"
+    )
+    print(
+        f"正确性 case: {[(f'N{n}', 'causal' if c else 'full') for _, n, _, c in CORRECTNESS_CASES]}"
+    )
+    print(
+        f"性能   case: B{PERF_CASE[0]} N{PERF_CASE[1]} H{PERF_CASE[2]} causal={PERF_CASE[3]}"
+    )
     print(f"{'='*92}\n", flush=True)
 
     # ── 预先造数据 + golden（只算一次，各配置复用）────────────────────────────
@@ -177,7 +180,12 @@ def main():
     perf_b, perf_n, perf_h, perf_causal = PERF_CASE
     perf_q = None
     if not args.no_perf:
-        perf_q = torch.randn(perf_b, perf_n, perf_h, 128, dtype=torch.float16, device="npu")
+        perf_q = torch.randn(perf_b,
+                             perf_n,
+                             perf_h,
+                             128,
+                             dtype=torch.float16,
+                             device="npu")
     perf_flops = 4 * perf_b * perf_h * (perf_n * (perf_n + 1) / 2) * 128
 
     def time_ms(fn_, iters, reps, warmup):
@@ -222,11 +230,13 @@ def main():
                 status = "★精度不合格"
             # ② 性能
             if not args.no_perf:
-                median_ms = time_ms(lambda: fn(perf_q, perf_q, perf_q, causal=perf_causal),
-                                    args.iters, args.reps, args.warmup)
+                median_ms = time_ms(
+                    lambda: fn(perf_q, perf_q, perf_q, causal=perf_causal), args.iters,
+                    args.reps, args.warmup)
         except Exception:
             status = "✗ " + traceback.format_exc(limit=1).strip().splitlines()[-1][:40]
-        tf = perf_flops / (median_ms * 1e-3) / 1e12 if median_ms == median_ms else float("nan")
+        tf = perf_flops / (median_ms *
+                           1e-3) / 1e12 if median_ms == median_ms else float("nan")
         results.append({
             "config": opts,
             "max_o_err": max_err,
@@ -234,11 +244,14 @@ def main():
             "tflops": tf,
             "status": status,
         })
-        print(f"{idx:>3} {cfg_str:<58} {max_err:>10.5f} {median_ms:>11.3f} {tf:>8.1f}  {status}",
-              flush=True)
+        print(
+            f"{idx:>3} {cfg_str:<58} {max_err:>10.5f} {median_ms:>11.3f} {tf:>8.1f}  {status}",
+            flush=True)
 
     # ── 汇总 ────────────────────────────────────────────────────────────────
-    ok = [r for r in results if r["status"] == "OK" and r["median_ms"] == r["median_ms"]]
+    ok = [
+        r for r in results if r["status"] == "OK" and r["median_ms"] == r["median_ms"]
+    ]
     ok.sort(key=lambda r: r["median_ms"])
     print(f"\n{'='*92}")
     print(f"合格配置 {len(ok)}/{len(results)}（o_err < {O_ERR_TOL}）")
@@ -254,9 +267,11 @@ def main():
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"\n明细已写入 {args.out}")
-    print(f"复现最优: FA_NW={ok[0]['config']['num_warps']} FA_NS={ok[0]['config']['num_stages']} "
-          f"FA_MB={int(ok[0]['config']['multibuffer'])} python3 bench/triton_check.py --perf"
-          if ok else "", flush=True)
+    print(
+        f"复现最优: FA_NW={ok[0]['config']['num_warps']} FA_NS={ok[0]['config']['num_stages']} "
+        f"FA_MB={int(ok[0]['config']['multibuffer'])} python3 bench/triton_check.py --perf"
+        if ok else "",
+        flush=True)
 
 
 if __name__ == "__main__":

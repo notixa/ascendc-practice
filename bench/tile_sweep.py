@@ -23,14 +23,14 @@ import sys
 # 全部是 16 的倍数；刻意混入大量非 2 的幂
 DEFAULT_TILES = [
     # 面积 16384（当前 UB 天花板附近）
-    "64x256",   # 当前最优
+    "64x256",  # 当前最优
     "128x128",
     "112x144",
     "96x160",
     "80x192",
     "144x112",
     # 面积 12288~14336
-    "96x128",   # 旧基线
+    "96x128",  # 旧基线
     "112x128",
     "128x112",
     "64x224",
@@ -50,10 +50,11 @@ DEFAULT_TILES = [
 
 # ---------------------------------------------------------------- child mode
 def run_one(tile, n, h, causal, iters, reps):
-    os.environ["FAT_TILES"] = tile                       # 必须在 import 之前
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "triton_lab"))
-    import torch                                        # noqa: PLC0415
-    import torch_npu                                    # noqa: E402,F401
+    os.environ["FAT_TILES"] = tile  # 必须在 import 之前
+    sys.path.insert(
+        0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "triton_lab"))
+    import torch  # noqa: PLC0415
+    import torch_npu  # noqa: E402,F401
     from kernels.flash_attention.fa_fwd import fla_fwd  # noqa: PLC0415
 
     bq, bk = (int(v) for v in tile.split("x"))
@@ -61,17 +62,19 @@ def run_one(tile, n, h, causal, iters, reps):
     try:
         o = fla_fwd(q, q, q, causal=bool(causal))
         torch.npu.synchronize()
-    except Exception as exc:                            # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         msg = str(exc)
         m = re.search(r"requires (\d+) bits while (\d+) bits", msg)
         if m:
             print(f"RESULT {bq} {bk} UB {int(m.group(1))} 0 0")
         else:
-            print(f"RESULT {bq} {bk} ERR 0 0 0 {type(exc).__name__}: {msg.splitlines()[0][:80]}")
+            print(
+                f"RESULT {bq} {bk} ERR 0 0 0 {type(exc).__name__}: {msg.splitlines()[0][:80]}"
+            )
         return
 
     # 正确性（拿第 0 行前 8 列粗查，避免父进程再算 golden）
-    import math                                         # noqa: PLC0415
+    import math  # noqa: PLC0415
     s = torch.einsum("bqhd,bkhd->bhqk", q.float(), q.float()) / math.sqrt(128)
     if causal:
         m2 = torch.triu(torch.ones(n, n, dtype=torch.bool, device=s.device), 1)
@@ -117,16 +120,24 @@ def main():
         return
 
     tiles = [t.strip() for t in args.tiles.split(",")] if args.tiles else DEFAULT_TILES
-    flops = 4 * 1 * args.h * (args.n * (args.n + 1) / 2 if args.causal else args.n * args.n) * 128
+    flops = 4 * 1 * args.h * (args.n * (args.n + 1) / 2 if args.causal else args.n *
+                              args.n) * 128
 
     rows = []
     for i, t in enumerate(tiles, 1):
-        cmd = [sys.executable, os.path.abspath(__file__), "--one", t,
-               "--n", str(args.n), "--h", str(args.h), "--causal", str(args.causal),
-               "--iters", str(args.iters), "--reps", str(args.reps)]
+        cmd = [
+            sys.executable,
+            os.path.abspath(__file__), "--one", t, "--n",
+            str(args.n), "--h",
+            str(args.h), "--causal",
+            str(args.causal), "--iters",
+            str(args.iters), "--reps",
+            str(args.reps)
+        ]
         print(f"[{i}/{len(tiles)}] {t:<10}", end=" ", flush=True)
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=900).stdout
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=900).stdout
         except subprocess.TimeoutExpired:
             print("TIMEOUT")
             rows.append((t, "TIMEOUT", None, None, ""))

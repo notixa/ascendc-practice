@@ -77,3 +77,6 @@ fat_prof_AB_*/
 .scratch/
 .triton-cache/
 dump_*/
+.tmp/
+.uv-tools/
+.venv-fmt/

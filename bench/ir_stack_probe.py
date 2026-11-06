@@ -37,7 +37,6 @@ PATTERNS = {
     "scf.for": r"scf\.for",
 }
 
-
 # ------------------------------------------------------------------ kernels
 KERNELS = r'''
 import triton
@@ -117,12 +116,12 @@ def k_group4(q_ptr, k_ptr, v_ptr, o_ptr, N,
 # ------------------------------------------------------------- child runner
 def run_child(tag, which, bn, bq, n):
     """子进程：编译一次，抓 stderr 里的 IR 统计 + UB 数字。"""
-    import torch          # noqa: PLC0415
-    import torch_npu      # noqa: E402,F401
-    import triton         # noqa: PLC0415
+    import torch  # noqa: PLC0415
+    import torch_npu  # noqa: E402,F401
+    import triton  # noqa: PLC0415
 
     ns = {}
-    exec(compile(KERNELS, "<probe>", "exec"), ns)      # noqa: S102
+    exec(compile(KERNELS, "<probe>", "exec"), ns)  # noqa: S102
     kern = ns[which]
 
     q = torch.randn(bq * D, dtype=torch.float16, device="npu")
@@ -130,10 +129,10 @@ def run_child(tag, which, bn, bq, n):
     v = torch.randn(n * D, dtype=torch.float16, device="npu")
     o = torch.zeros(bq * D, dtype=torch.float16, device="npu")
     try:
-        kern[(1,)](q, k, v, o, n, BLOCK_Q=bq, BN=bn, DIM=D)
+        kern[(1, )](q, k, v, o, n, BLOCK_Q=bq, BN=bn, DIM=D)
         torch.npu.synchronize()
         print(f"RESULT {tag} OK 0")
-    except Exception as exc:                            # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         m = re.search(r"requires (\d+) bits", str(exc))
         flag = int(m.group(1)) if m else -1
         print(f"RESULT {tag} {'UB' if m else 'ERR'} {flag}")
@@ -153,7 +152,6 @@ def main():
         run_child(args.one[0], args.one[1], int(args.one[2]), int(args.one[3]), args.n)
         return
 
-
     if args.exp in ("a", "both"):
         print("=" * 74)
         print("EXP-A  小 tile（全部编得过）⇒ 数 IR 里的跨核同步算子")
@@ -161,10 +159,21 @@ def main():
         cfgs = [("seq_BN64", "k_seq", 64, 64), ("grp4_BN64", "k_group4", 64, 64),
                 ("seq_BN256", "k_seq", 256, 64)]
         for tag, kern, bn, bq in cfgs:
-            cmd = [sys.executable, os.path.abspath(__file__), "--one", tag, kern, str(bn), str(bq)]
+            cmd = [
+                sys.executable,
+                os.path.abspath(__file__), "--one", tag, kern,
+                str(bn),
+                str(bq)
+            ]
             env = dict(os.environ, MLIR_ENABLE_DUMP="1", TRITON_ALWAYS_COMPILE="1")
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
-            res = next((ln for ln in out.stdout.splitlines() if ln.startswith("RESULT")), "RESULT ? ? ?")
+            out = subprocess.run(cmd,
+                                 capture_output=True,
+                                 text=True,
+                                 timeout=1800,
+                                 env=env)
+            res = next(
+                (ln for ln in out.stdout.splitlines() if ln.startswith("RESULT")),
+                "RESULT ? ? ?")
             counts = {k: len(re.findall(p, out.stderr)) for k, p in PATTERNS.items()}
             print(f"\n  {tag:<12} {res.split(maxsplit=3)[-1]}")
             for k, v in counts.items():
@@ -177,11 +186,23 @@ def main():
         cfgs = [("seq_BN64", "k_seq", 64, 64), ("grp4_BN64(=256列)", "k_group4", 64, 64),
                 ("seq_BN256", "k_seq", 256, 64), ("seq_BN512", "k_seq", 512, 64)]
         for tag, kern, bn, bq in cfgs:
-            cmd = [sys.executable, os.path.abspath(__file__), "--one", tag, kern, str(bn), str(bq)]
+            cmd = [
+                sys.executable,
+                os.path.abspath(__file__), "--one", tag, kern,
+                str(bn),
+                str(bq)
+            ]
             env = dict(os.environ, TRITON_ALWAYS_COMPILE="1")
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
-            res = next((ln for ln in out.stdout.splitlines() if ln.startswith("RESULT")), "RESULT ? ? ?")
-            msg = next((ln for ln in out.stdout.splitlines() if ln.startswith("MSG")), "")
+            out = subprocess.run(cmd,
+                                 capture_output=True,
+                                 text=True,
+                                 timeout=1800,
+                                 env=env)
+            res = next(
+                (ln for ln in out.stdout.splitlines() if ln.startswith("RESULT")),
+                "RESULT ? ? ?")
+            msg = next((ln for ln in out.stdout.splitlines() if ln.startswith("MSG")),
+                       "")
             p = res.split()
             if p[2] == "OK":
                 print(f"  {tag:<20} 编过")

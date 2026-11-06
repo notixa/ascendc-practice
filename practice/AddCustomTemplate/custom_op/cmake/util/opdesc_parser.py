@@ -8,7 +8,6 @@ Copyright (c) Huawei Technologies Co., Ltd. 2020-2021. All rights reserved.
 import sys
 import os
 
-
 OP_ALL = "__ALLOP__"
 SOC_ALL = "__ALLSOC__"
 SOC_TO_SHORT_SOC_MAP = {
@@ -34,6 +33,7 @@ SOC_TO_SHORT_SOC_MAP = {
 
 
 class OpDesc:
+
     def __init__(self: any, op_type: str):
         self.op_type = op_type
         self.attr_list = []
@@ -148,8 +148,7 @@ class OpDesc:
                 self.attr_val[attr] = {}
             if conf.startswith("attr_{}.type".format(attr)):
                 self.attr_val.get(attr)["type"] = self._camel_to_snake(
-                    self._parse_str(conf)
-                )
+                    self._parse_str(conf))
             elif conf.startswith("attr_{}.paramType".format(attr)):
                 self.attr_val.get(attr)["paramType"] = self._parse_str(conf)
             elif conf.startswith("attr_{}.defaultValue".format(attr)):
@@ -188,8 +187,7 @@ def _trans_soc_ver_to_short(soc_ver: str):
     if low_soc_ver not in SOC_TO_SHORT_SOC_MAP:
         print(
             f"WARNING: caution: {soc_ver} will trans into ascend910, if not your intention,"
-            f"use ascend910b1~4 instead"
-        )
+            f"use ascend910b1~4 instead")
     return SOC_TO_SHORT_SOC_MAP[low_soc_ver]
 
 
@@ -206,8 +204,7 @@ def _get_op_custom_options(op_descs: list, auto_gen_dir: str):
             param_list = str.split(line.rstrip("\n"), ",")
             if len(param_list) != 3:
                 raise Exception(
-                    f"ERROR: custom compile option {param_list} len is not 3"
-                )
+                    f"ERROR: custom compile option {param_list} len is not 3")
             op_type = param_list[0]
             if op_type.upper() == "ALL":
                 op_type = OP_ALL

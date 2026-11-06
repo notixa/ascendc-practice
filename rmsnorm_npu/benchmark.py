@@ -51,9 +51,9 @@ def print_section(title: str):
     print("-" * 110)
 
 
-def pytorch_decomposed_rmsnorm(
-    x: torch.Tensor, gamma: torch.Tensor, eps: float = 1e-5
-) -> torch.Tensor:
+def pytorch_decomposed_rmsnorm(x: torch.Tensor,
+                               gamma: torch.Tensor,
+                               eps: float = 1e-5) -> torch.Tensor:
     """Standard PyTorch decomposed RMSNorm running in eager mode.
 
     Decomposes into 5 discrete operators:
@@ -68,9 +68,9 @@ def pytorch_decomposed_rmsnorm(
     return x * rrms * gamma
 
 
-def cpu_reference_rmsnorm(
-    x: torch.Tensor, gamma: torch.Tensor, eps: float = 1e-5
-) -> torch.Tensor:
+def cpu_reference_rmsnorm(x: torch.Tensor,
+                          gamma: torch.Tensor,
+                          eps: float = 1e-5) -> torch.Tensor:
     """High-precision reference implementation on CPU."""
     x_f = x.float()
     gamma_f = gamma.float()
@@ -93,11 +93,8 @@ def check_builtin_torch_npu_support() -> Tuple[bool, str]:
         return True, "Supported"
     except Exception as e:
         err_msg = str(e)
-        if (
-            "EZ3003" in err_msg
-            or "No supported Ops kernel" in err_msg
-            or "build op model failed" in err_msg
-        ):
+        if ("EZ3003" in err_msg or "No supported Ops kernel" in err_msg
+                or "build op model failed" in err_msg):
             return (
                 False,
                 "Unsupported on Ascend 310B (CANN OPP only provides pre-built kernel for 910/910B)",
@@ -105,12 +102,10 @@ def check_builtin_torch_npu_support() -> Tuple[bool, str]:
         return False, f"Failed: {err_msg[:60]}..."
 
 
-def measure_latency_ms(
-    fn: Callable[[], torch.Tensor],
-    warmup: int = 15,
-    repeat: int = 50,
-    is_npu: bool = True,
-) -> Dict[str, float]:
+def measure_latency_ms(fn: Callable[[], torch.Tensor],
+                       warmup: int = 15,
+                       repeat: int = 50,
+                       is_npu: bool = True) -> Dict[str, float]:
     """Measure operator latency in milliseconds with warmup and synchronization."""
     # Warmup
     for _ in range(warmup):
@@ -134,9 +129,8 @@ def measure_latency_ms(
     }
 
 
-def compute_bandwidth_gbps(
-    shape: Tuple[int, ...], dtype: torch.dtype, latency_ms: float
-) -> float:
+def compute_bandwidth_gbps(shape: Tuple[int, ...], dtype: torch.dtype,
+                           latency_ms: float) -> float:
     """Compute effective memory bandwidth in GB/s.
 
     RMSNorm Memory Access:
@@ -196,50 +190,46 @@ def run_benchmark(args):
 
     # LLM Prefill Phase (Batch/Sequence processing)
     if args.scenario in ("all", "prefill"):
-        scenarios.extend(
-            [
-                (
-                    "Prefill",
-                    (1, 512, 1024),
-                    "Small Model (Qwen-0.5B, Seq 512, Dim 1024)",
-                ),
-                (
-                    "Prefill",
-                    (1, 1024, 2048),
-                    "Medium Model (Qwen-1.8B, Seq 1024, Dim 2048)",
-                ),
-                (
-                    "Prefill",
-                    (1, 2048, 4096),
-                    "7B Model Prefill (LLaMA-7B, Seq 2048, Dim 4096)",
-                ),
-                (
-                    "Prefill",
-                    (4, 256, 2048),
-                    "Multi-batch Prefill (B=4, Seq 256, Dim 2048)",
-                ),
-                ("Prefill", (4, 512, 4096), "Heavy Prefill (B=4, Seq 512, Dim 4096)"),
-            ]
-        )
+        scenarios.extend([
+            (
+                "Prefill",
+                (1, 512, 1024),
+                "Small Model (Qwen-0.5B, Seq 512, Dim 1024)",
+            ),
+            (
+                "Prefill",
+                (1, 1024, 2048),
+                "Medium Model (Qwen-1.8B, Seq 1024, Dim 2048)",
+            ),
+            (
+                "Prefill",
+                (1, 2048, 4096),
+                "7B Model Prefill (LLaMA-7B, Seq 2048, Dim 4096)",
+            ),
+            (
+                "Prefill",
+                (4, 256, 2048),
+                "Multi-batch Prefill (B=4, Seq 256, Dim 2048)",
+            ),
+            ("Prefill", (4, 512, 4096), "Heavy Prefill (B=4, Seq 512, Dim 4096)"),
+        ])
 
     # LLM Decode Phase (Token generation, SeqLen=1)
     if args.scenario in ("all", "decode"):
-        scenarios.extend(
-            [
-                ("Decode", (1, 1, 2048), "Single-stream Decode (B=1, Seq 1, Dim 2048)"),
-                (
-                    "Decode",
-                    (1, 1, 4096),
-                    "Single-stream 7B Decode (B=1, Seq 1, Dim 4096)",
-                ),
-                ("Decode", (4, 1, 4096), "Batch-4 7B Decode (B=4, Seq 1, Dim 4096)"),
-                (
-                    "Decode",
-                    (16, 1, 4096),
-                    "Batch-16 7B Serving Decode (B=16, Seq 1, Dim 4096)",
-                ),
-            ]
-        )
+        scenarios.extend([
+            ("Decode", (1, 1, 2048), "Single-stream Decode (B=1, Seq 1, Dim 2048)"),
+            (
+                "Decode",
+                (1, 1, 4096),
+                "Single-stream 7B Decode (B=1, Seq 1, Dim 4096)",
+            ),
+            ("Decode", (4, 1, 4096), "Batch-4 7B Decode (B=4, Seq 1, Dim 4096)"),
+            (
+                "Decode",
+                (16, 1, 4096),
+                "Batch-16 7B Serving Decode (B=16, Seq 1, Dim 4096)",
+            ),
+        ])
 
     dtypes = []
     if args.dtype in ("all", "fp16"):
@@ -249,8 +239,7 @@ def run_benchmark(args):
 
     # 4. Run Benchmark Suite
     print_section(
-        f"Executing Benchmarks (Warmup: {args.warmup}, Repeat: {args.repeat})"
-    )
+        f"Executing Benchmarks (Warmup: {args.warmup}, Repeat: {args.repeat})")
 
     results_table = []
 
@@ -258,12 +247,10 @@ def run_benchmark(args):
         dtype_str = "FP16" if dtype == torch.float16 else "FP32"
         print(f"\n{COLOR_BOLD}=== Precision: {dtype_str} ==={COLOR_RESET}")
 
-        header = (
-            f"{'Scenario':<8} | {'Shape':<16} | {'Dtype':<5} | "
-            f"{'Custom Ascend C':<15} | {'PyTorch NPU':<13} | "
-            f"{'torch_npu Op':<14} | {'CPU Ref':<11} | "
-            f"{'Speedup':<9} | {'Throughput':<10} | {'MaxDiff'}"
-        )
+        header = (f"{'Scenario':<8} | {'Shape':<16} | {'Dtype':<5} | "
+                  f"{'Custom Ascend C':<15} | {'PyTorch NPU':<13} | "
+                  f"{'torch_npu Op':<14} | {'CPU Ref':<11} | "
+                  f"{'Speedup':<9} | {'Throughput':<10} | {'MaxDiff'}")
         print("-" * len(header))
         print(header)
         print("-" * len(header))
@@ -288,9 +275,8 @@ def run_benchmark(args):
                 custom_out = rmsnorm_npu.forward(x_npu, gamma_npu)
                 if HAS_TORCH_NPU:
                     torch.npu.synchronize()
-                max_diff = (
-                    (custom_out.cpu().float() - ref_out.float()).abs().max().item()
-                )
+                max_diff = ((custom_out.cpu().float() -
+                             ref_out.float()).abs().max().item())
                 custom_metrics = measure_latency_ms(
                     lambda: rmsnorm_npu.forward(x_npu, gamma_npu),
                     warmup=args.warmup,
@@ -350,9 +336,8 @@ def run_benchmark(args):
                 color = COLOR_GREEN if speedup >= 1.0 else COLOR_YELLOW
                 speedup_str = f"{color}{speedup:6.2f}x{COLOR_RESET}"
 
-            bw_gbps = (
-                compute_bandwidth_gbps(shape, dtype, custom_lat) if custom_lat else 0.0
-            )
+            bw_gbps = (compute_bandwidth_gbps(shape, dtype, custom_lat)
+                       if custom_lat else 0.0)
 
             # Format outputs
             custom_str = f"{custom_lat:8.4f} ms" if custom_lat else "FAIL"
@@ -362,31 +347,36 @@ def run_benchmark(args):
             shape_str = str(list(shape))
             diff_str = f"{max_diff:.2e}"
 
-            row_str = (
-                f"{sc_name:<8} | {shape_str:<16} | {dtype_str:<5} | "
-                f"{custom_str:<15} | {npu_str:<13} | "
-                f"{builtin_str:<14} | {cpu_str:<11} | "
-                f"{speedup_str:<18} | {bw_gbps:6.2f} GB/s | {diff_str}"
-            )
+            row_str = (f"{sc_name:<8} | {shape_str:<16} | {dtype_str:<5} | "
+                       f"{custom_str:<15} | {npu_str:<13} | "
+                       f"{builtin_str:<14} | {cpu_str:<11} | "
+                       f"{speedup_str:<18} | {bw_gbps:6.2f} GB/s | {diff_str}")
             print(row_str)
 
-            results_table.append(
-                {
-                    "scenario": sc_name,
-                    "shape": shape_str,
-                    "dtype": dtype_str,
-                    "desc": desc,
-                    "custom_ms": custom_lat,
-                    "npu_ms": npu_decomp_lat,
-                    "builtin_ms": builtin_lat,
-                    "cpu_ms": cpu_lat,
-                    "speedup": (npu_decomp_lat / custom_lat)
-                    if (custom_lat and npu_decomp_lat)
-                    else None,
-                    "bandwidth_gbps": bw_gbps,
-                    "max_diff": max_diff,
-                }
-            )
+            results_table.append({
+                "scenario":
+                sc_name,
+                "shape":
+                shape_str,
+                "dtype":
+                dtype_str,
+                "desc":
+                desc,
+                "custom_ms":
+                custom_lat,
+                "npu_ms":
+                npu_decomp_lat,
+                "builtin_ms":
+                builtin_lat,
+                "cpu_ms":
+                cpu_lat,
+                "speedup": (npu_decomp_lat / custom_lat) if
+                (custom_lat and npu_decomp_lat) else None,
+                "bandwidth_gbps":
+                bw_gbps,
+                "max_diff":
+                max_diff,
+            })
 
     # 5. Analysis & Architectural Insights
     print_section("Architecture & Performance Insights")
@@ -429,12 +419,14 @@ if __name__ == "__main__":
         default="all",
         help="Scenario to benchmark: prefill, decode, or all (default: all)",
     )
-    parser.add_argument(
-        "--warmup", type=int, default=15, help="Warmup iterations (default: 15)"
-    )
-    parser.add_argument(
-        "--repeat", type=int, default=50, help="Measurement iterations (default: 50)"
-    )
+    parser.add_argument("--warmup",
+                        type=int,
+                        default=15,
+                        help="Warmup iterations (default: 15)")
+    parser.add_argument("--repeat",
+                        type=int,
+                        default=50,
+                        help="Measurement iterations (default: 50)")
     parser.add_argument(
         "--no-cpu",
         dest="include_cpu",

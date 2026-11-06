@@ -10,7 +10,6 @@ Huawei Technologies Co., Ltd. All Rights Reserved © 2020
 import os
 import stat
 
-
 REPLAY_BATCH = "batch"
 REPLAY_ITERATE = "iterate"
 CFG_IMPL_DIR = "impl_dir"
@@ -26,6 +25,7 @@ SOC_MAP_EXT = {
 }
 BIN_CMD = "opc $1 --main_func={fun} --input_param={param} --soc_version={soc} \
 --output=$2 --impl_mode={impl} --simplified_key_mode=0 --op_mode=dynamic\n"
+
 CHK_CMD = """
 if ! test -f $2/{res_file} ; then
   echo "$2/{res_file} not generated!"

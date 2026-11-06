@@ -9,15 +9,8 @@ import triton.language as tl
 
 
 @triton.jit
-def softmax_kernel(
-    output_ptr,
-    input_ptr,
-    input_row_stride,
-    output_row_stride,
-    n_rows,
-    n_cols,
-    BLOCK_SIZE: tl.constexpr,
-):
+def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows,
+                   n_cols, BLOCK_SIZE: tl.constexpr):
     row_start = tl.program_id(0)
     row_step = tl.num_programs(0)
     for row_idx in range(row_start, n_rows, row_step):

@@ -25,11 +25,15 @@ from triton.compiler import ASTSource
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from ttir_stack_probe import SIG, k_group4, k_seq          # noqa: E402
+from ttir_stack_probe import SIG, k_group4, k_seq  # noqa: E402
 
 BISHENGIR = os.path.join(
     os.path.dirname(triton.__file__),
-    "backends", "ascend", "bishengir", "bin", "bishengir-compile",
+    "backends",
+    "ascend",
+    "bishengir",
+    "bin",
+    "bishengir-compile",
 )
 BS_FLAGS = [
     "--target=Ascend910B3",
@@ -42,13 +46,14 @@ BS_FLAGS = [
 ]
 
 COUNTERS = {
-    "sync_block":  r"hivm\.hir\.sync_block_(?:wait|set)",
-    "wait_flag":   r"hivm\.hir\.wait_flag",
-    "set_flag":    r"hivm\.hir\.set_flag",
+    "sync_block": r"hivm\.hir\.sync_block_(?:wait|set)",
+    "wait_flag": r"hivm\.hir\.wait_flag",
+    "set_flag": r"hivm\.hir\.set_flag",
     "pipe_barrier": r"hivm\.hir\.pipe_barrier",
-    "mma_tile":    r"mma_tile",
-    "fixpipe":     r"fixpipe",
-    "vector_op":   r"hivm\.hir\.(?:vadd|vmul|vmax|vmin|vexp|vln|vcmp|vsel|vbrc|vconv|vsub)",
+    "mma_tile": r"mma_tile",
+    "fixpipe": r"fixpipe",
+    "vector_op":
+    r"hivm\.hir\.(?:vadd|vmul|vmax|vmin|vexp|vln|vcmp|vsel|vbrc|vconv|vsub)",
 }
 
 
@@ -57,12 +62,17 @@ def emit_mlirbc(fn, bq, bn, tag):
     dumpdir = tempfile.mkdtemp(prefix=f"dump_{tag}_", dir=os.getcwd())
     os.environ["TRITON_KERNEL_DUMP"] = "1"
     os.environ["TRITON_DUMP_DIR"] = dumpdir
-    src = ASTSource(fn=fn, signature=SIG,
-                    constexprs={"BLOCK_Q": bq, "BN": bn, "DIM": 128})
+    src = ASTSource(fn=fn,
+                    signature=SIG,
+                    constexprs={
+                        "BLOCK_Q": bq,
+                        "BN": bn,
+                        "DIM": 128
+                    })
     try:
         triton.compile(src, target=GPUTarget("npu", "Ascend910B3", 0))
-    except Exception:                                   # noqa: BLE001
-        pass                                            # 预期：本机缺 torch 头
+    except Exception:  # noqa: BLE001
+        pass  # 预期：本机缺 torch 头
     files = glob.glob(os.path.join(dumpdir, "**", "*.mlirbc"), recursive=True)
     return files[0] if files else None, dumpdir
 
@@ -72,7 +82,9 @@ def run_bishengir(mlirbc, tag):
     outdir = tempfile.mkdtemp(prefix=f"hivm_{tag}_", dir=os.getcwd())
     out = os.path.join(outdir, "k")
     r = subprocess.run([BISHENGIR, mlirbc] + BS_FLAGS + ["-o", out],
-                       capture_output=True, text=True, timeout=1800)
+                       capture_output=True,
+                       text=True,
+                       timeout=1800)
     shutil.rmtree(outdir, ignore_errors=True)
     return r.stderr
 
@@ -110,19 +122,20 @@ def ub_peak_kb(func_text):
         off, n, dt = int(m.group(1)), int(m.group(2)), m.group(3)
         elem = {"f16": 2, "f32": 4, "i32": 4, "i64": 8, "i8": 1}.get(dt, 4)
         best = max(best, off + n * elem)
-    if best == 0:                                       # 退路：只看最大偏移
-        for m in re.finditer(r"pointer_cast\(%c(\d+)_i64\)[^\n]*address_space<ub>", func_text):
+    if best == 0:  # 退路：只看最大偏移
+        for m in re.finditer(r"pointer_cast\(%c(\d+)_i64\)[^\n]*address_space<ub>",
+                             func_text):
             best = max(best, int(m.group(1)))
     return best / 1024
 
 
 def main():
     cfgs = [
-        ("k_seq  BN=64", k_seq, 64, 64, 64),      # 基线：每轮 64 列
+        ("k_seq  BN=64", k_seq, 64, 64, 64),  # 基线：每轮 64 列
         ("k_group4 BN=64", k_group4, 64, 64, 256),  # 方法一：每轮 256 列
-        ("k_seq  BN=256", k_seq, 256, 64, 256),   # 方法二：每轮 256 列
-        ("k_seq  BN=384", k_seq, 384, 64, 384),   # 探 UB 天花板
-        ("k_seq  BN=512", k_seq, 512, 64, 512),   # 探 UB 天花板
+        ("k_seq  BN=256", k_seq, 256, 64, 256),  # 方法二：每轮 256 列
+        ("k_seq  BN=384", k_seq, 384, 64, 384),  # 探 UB 天花板
+        ("k_seq  BN=512", k_seq, 512, 64, 512),  # 探 UB 天花板
     ]
     rows = []
     for label, fn, bn, bq, width in cfgs:
@@ -136,7 +149,10 @@ def main():
         shutil.rmtree(dumpdir, ignore_errors=True)
         funcs = split_funcs(ir)
         if not funcs:
-            rows.append((label, width, None, f"bishengir 没产出 HIVM IR: {ir.strip().splitlines()[-1][:60] if ir.strip() else '空'}"))
+            rows.append((
+                label, width, None,
+                f"bishengir 没产出 HIVM IR: {ir.strip().splitlines()[-1][:60] if ir.strip() else '空'}"
+            ))
             continue
         stats = {}
         for core, body in funcs.items():
@@ -159,7 +175,9 @@ def main():
             print(f"   ✗ {err}")
             continue
         for k in COUNTERS:
-            print(f"   aic.{k:<12} {stats.get(f'aic.{k}', 0):>4}     aiv.{k:<12} {stats.get(f'aiv.{k}', 0):>4}")
+            print(
+                f"   aic.{k:<12} {stats.get(f'aic.{k}', 0):>4}     aiv.{k:<12} {stats.get(f'aiv.{k}', 0):>4}"
+            )
 
     ok = [r for r in rows if r[2]]
     print("\n" + "=" * 100)
@@ -171,8 +189,10 @@ def main():
         per = stats["_body_code"] * 256.0 / width
         if base is None:
             base = per
-        print(f"{label:<16}{width:>9}{stats['_body_code']:>10}{per:>14.1f}{base / per:>9.2f}x"
-              f"    UB(AIV) {stats['_ub_aiv']:>6.1f} KB  UB(AIC) {stats['_ub_aic']:>6.1f} KB")
+        print(
+            f"{label:<16}{width:>9}{stats['_body_code']:>10}{per:>14.1f}{base / per:>9.2f}x"
+            f"    UB(AIV) {stats['_ub_aiv']:>6.1f} KB  UB(AIC) {stats['_ub_aic']:>6.1f} KB"
+        )
 
     print("\n  AIC 算子清单（三档一致说明 lowering 路径相同，差别只在数量）:")
     print("   ", ", ".join(sorted(ok[0][2]["_ops"])) if ok else "—")

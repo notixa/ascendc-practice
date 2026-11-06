@@ -1,0 +1,11 @@
+# yapf 配置：按行宽折行，但【每行尽量放多个参数】
+#
+# 与 ruff 的分工：
+#   格式化 → yapf（本文件）；静态检查 → ruff（ruff.toml 的 [lint]）
+#
+# ruff/Black 系在超宽时固定退化成"每行一个参数"，yapf 会把能放下的参数塞满一行。
+
+[style]
+based_on_style = pep8
+column_limit = 88
+indent_width = 4

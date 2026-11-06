@@ -23,6 +23,7 @@ from typing import Any, List, Optional, Union
 
 import triton.language as tl
 
+
 # --------------------------------------------------------------------------
 # 枚举（真实定义来自 triton._C.libtriton.ascend.ir）
 # --------------------------------------------------------------------------
@@ -32,10 +33,12 @@ class CORE:
     CUBE_OR_VECTOR: Any
     CUBE_AND_VECTOR: Any
 
+
 class MODE:
     SIMD: Any
     SIMT: Any
     MIX: Any
+
 
 class PIPE:
     PIPE_S: Any
@@ -45,116 +48,220 @@ class PIPE:
     PIPE_MTE3: Any
     PIPE_FIX: Any
 
+
 class IteratorType:
     Parallel: Any
     Broadcast: Any
 
-class EVENT_ID: ...
-class SYNC_HINT: ...
-class SYNC_IN_VF: ...
+
+class EVENT_ID:
+    ...
+
+
+class SYNC_HINT:
+    ...
+
+
+class SYNC_IN_VF:
+    ...
+
 
 class FixpipeDMAMode:
     NZ2ND: Any
     ND2NZ: Any
 
+
 class FixpipeDualDstMode:
     NO_DUAL: Any
     DUAL: Any
 
-class FixpipePreQuantMode: ...
-class FixpipePreReluMode: ...
+
+class FixpipePreQuantMode:
+    ...
+
+
+class FixpipePreReluMode:
+    ...
+
 
 ascend_address_space: Any
 int64: Any
+
 
 # --------------------------------------------------------------------------
 # 作用域：显式指定代码块跑在 cube 还是 vector 核上
 # --------------------------------------------------------------------------
 class scope:
-    def __init__(self, core_mode: str, **kwargs: Any) -> None: ...
-    def __enter__(self) -> "scope": ...
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool: ...
+
+    def __init__(self, core_mode: str, **kwargs: Any) -> None:
+        ...
+
+    def __enter__(self) -> "scope":
+        ...
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        ...
+
 
 # --------------------------------------------------------------------------
 # 跨核同步（semaphore 语义：set 让 per-event 计数 +1，wait 在计数 >0 时通过并 -1）
 # 必须成对出现在匹配的 scope 内；event_id 取值 [0, 15]
 # --------------------------------------------------------------------------
-def sync_block_set(
-    sender: str,
-    receiver: str,
-    event_id: int,
-    sender_pipe: Optional[Any] = ...,
-    receiver_pipe: Optional[Any] = ...,
-) -> None: ...
+def sync_block_set(sender: str,
+                   receiver: str,
+                   event_id: int,
+                   sender_pipe: Optional[Any] = ...,
+                   receiver_pipe: Optional[Any] = ...) -> None:
+    ...
 
-def sync_block_wait(
-    sender: str,
-    receiver: str,
-    event_id: int,
-    sender_pipe: Optional[Any] = ...,
-    receiver_pipe: Optional[Any] = ...,
-) -> None: ...
 
-def sync_block_all(mode: str, event_id: int) -> None: ...
-    # mode: "all_cube" | "all_vector" | "all" | "all_sub_vector"
+def sync_block_wait(sender: str,
+                    receiver: str,
+                    event_id: int,
+                    sender_pipe: Optional[Any] = ...,
+                    receiver_pipe: Optional[Any] = ...) -> None:
+    ...
+
+
+def sync_block_all(mode: str, event_id: int) -> None:
+    ...
+
+
+# mode: "all_cube" | "all_vector" | "all" | "all_sub_vector"
+
 
 # --------------------------------------------------------------------------
 # 流水 / 缓冲
 # --------------------------------------------------------------------------
-def multibuffer(src: tl.tensor, size: int) -> tl.tensor: ...
-    # size 只支持 2（源码里有 assert buffer_size == 2）
+def multibuffer(src: tl.tensor, size: int) -> tl.tensor:
+    ...
 
-def compile_hint(*args: Any, **kwargs: Any) -> None: ...
 
-def copy(src: Union[tl.tensor, Any], dst: Union[tl.tensor, Any]) -> None: ...
-    # UB -> UB 或 UB -> L1
+# size 只支持 2（源码里有 assert buffer_size == 2）
 
-def copy_from_ub_to_l1(src: Any, dst: Any) -> None: ...
-    # 已废弃；且仅 Ascend910_95 支持
 
-def fixpipe(
-    src: tl.tensor,
-    dst: Optional[Any] = ...,
-    dma_mode: Any = ...,
-    dual_dst_mode: Any = ...,
-) -> Optional[tl.tensor]: ...
-    # L0C -> UB，仅 Ascend910_95 series 支持
+def compile_hint(*args: Any, **kwargs: Any) -> None:
+    ...
+
+
+def copy(src: Union[tl.tensor, Any], dst: Union[tl.tensor, Any]) -> None:
+    ...
+
+
+# UB -> UB 或 UB -> L1
+
+
+def copy_from_ub_to_l1(src: Any, dst: Any) -> None:
+    ...
+
+
+# 已废弃；且仅 Ascend910_95 支持
+
+
+def fixpipe(src: tl.tensor,
+            dst: Optional[Any] = ...,
+            dma_mode: Any = ...,
+            dual_dst_mode: Any = ...) -> Optional[tl.tensor]:
+    ...
+
+
+# L0C -> UB，仅 Ascend910_95 series 支持
+
 
 # --------------------------------------------------------------------------
 # slice / 元素级
 # --------------------------------------------------------------------------
-def insert_slice(dst: tl.tensor, src: tl.tensor, offsets: List[int]) -> tl.tensor: ...
-def extract_slice(
-    src: tl.tensor, offsets: List[int], sizes: List[int], strides: List[int]
-) -> tl.tensor: ...
-def get_element(src: tl.tensor, index: List[int]) -> tl.tensor: ...
-def sort(x: tl.tensor, dim: int = ..., descending: bool = ...) -> tl.tensor: ...
-def flip(x: tl.tensor, dim: int = ...) -> tl.tensor: ...
-def cast(x: tl.tensor, dtype: Any) -> tl.tensor: ...
+def insert_slice(dst: tl.tensor, src: tl.tensor, offsets: List[int]) -> tl.tensor:
+    ...
+
+
+def extract_slice(src: tl.tensor, offsets: List[int], sizes: List[int],
+                  strides: List[int]) -> tl.tensor:
+    ...
+
+
+def get_element(src: tl.tensor, index: List[int]) -> tl.tensor:
+    ...
+
+
+def sort(x: tl.tensor, dim: int = ..., descending: bool = ...) -> tl.tensor:
+    ...
+
+
+def flip(x: tl.tensor, dim: int = ...) -> tl.tensor:
+    ...
+
+
+def cast(x: tl.tensor, dtype: Any) -> tl.tensor:
+    ...
+
 
 # --------------------------------------------------------------------------
 # 子核 / 调试
 # --------------------------------------------------------------------------
-def sub_vec_id() -> tl.tensor: ...
-def sub_vec_num() -> tl.tensor: ...
-def debug_barrier() -> None: ...
+def sub_vec_id() -> tl.tensor:
+    ...
+
+
+def sub_vec_num() -> tl.tensor:
+    ...
+
+
+def debug_barrier() -> None:
+    ...
+
 
 # --------------------------------------------------------------------------
 # 自定义算子注册
 # --------------------------------------------------------------------------
-def custom(*args: Any, **kwargs: Any) -> Any: ...
-def custom_semantic(*args: Any, **kwargs: Any) -> Any: ...
-def register_custom_op(*args: Any, **kwargs: Any) -> Any: ...
-class SyncEventSlot: ...
+def custom(*args: Any, **kwargs: Any) -> Any:
+    ...
 
-def builtin(fn: Any) -> Any: ...
-def is_builtin(fn: Any) -> bool: ...
+
+def custom_semantic(*args: Any, **kwargs: Any) -> Any:
+    ...
+
+
+def register_custom_op(*args: Any, **kwargs: Any) -> Any:
+    ...
+
+
+class SyncEventSlot:
+    ...
+
+
+def builtin(fn: Any) -> Any:
+    ...
+
+
+def is_builtin(fn: Any) -> bool:
+    ...
+
 
 # parallel / math 转出
-def parallel(*args: Any, **kwargs: Any) -> Any: ...
-def atan2(*args: Any, **kwargs: Any) -> Any: ...
-def isfinited(*args: Any, **kwargs: Any) -> Any: ...
-def finitef(*args: Any, **kwargs: Any) -> Any: ...
-def conv1d(*args: Any, **kwargs: Any) -> Any: ...
-def conv2d(*args: Any, **kwargs: Any) -> Any: ...
-def dot(*args: Any, **kwargs: Any) -> Any: ...
+def parallel(*args: Any, **kwargs: Any) -> Any:
+    ...
+
+
+def atan2(*args: Any, **kwargs: Any) -> Any:
+    ...
+
+
+def isfinited(*args: Any, **kwargs: Any) -> Any:
+    ...
+
+
+def finitef(*args: Any, **kwargs: Any) -> Any:
+    ...
+
+
+def conv1d(*args: Any, **kwargs: Any) -> Any:
+    ...
+
+
+def conv2d(*args: Any, **kwargs: Any) -> Any:
+    ...
+
+
+def dot(*args: Any, **kwargs: Any) -> Any:
+    ...

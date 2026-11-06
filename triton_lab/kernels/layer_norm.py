@@ -9,19 +9,8 @@ import triton.language as tl
 
 
 @triton.jit
-def layer_norm_kernel(
-    x_ptr,
-    y_ptr,
-    gamma_ptr,
-    beta_ptr,
-    stride_bq,
-    stride_qq,
-    batch_num,
-    row_num,
-    col_num,
-    eps,
-    BLOCK_SIZE: tl.constexpr,
-):
+def layer_norm_kernel(x_ptr, y_ptr, gamma_ptr, beta_ptr, stride_bq, stride_qq,
+                      batch_num, row_num, col_num, eps, BLOCK_SIZE: tl.constexpr):
     total_row_num = row_num * batch_num
     taskIdx = tl.program_id(0)
     coreNum = tl.num_programs(0)

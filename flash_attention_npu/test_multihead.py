@@ -43,8 +43,7 @@ grads = []
 for i in range(H):
     o_i, l_i = outs2[i]
     grads.append(
-        flash_attention_npu.backward(dos[i], qs[i], ks[i], vs[i], o_i, l_i, scale)
-    )
+        flash_attention_npu.backward(dos[i], qs[i], ks[i], vs[i], o_i, l_i, scale))
 torch.npu.synchronize()
 print("  >>> Backward pipelined without sync succeeded!", flush=True)
 

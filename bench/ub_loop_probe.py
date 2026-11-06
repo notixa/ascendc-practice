@@ -41,10 +41,10 @@ def _body(q, kp, vp, o, BLOCK_K: tl.constexpr):
 
 
 @triton.jit
-def _fa_one_loop(q_ptr, k_ptr, v_ptr, o_ptr, N_k, SPLIT,
-                 BLOCK_Q: tl.constexpr, BLOCK_K: tl.constexpr, HEAD_DIM: tl.constexpr):
-    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * HEAD_DIM
-                + tl.arange(0, HEAD_DIM)[None, :])
+def _fa_one_loop(q_ptr, k_ptr, v_ptr, o_ptr, N_k, SPLIT, BLOCK_Q: tl.constexpr,
+                 BLOCK_K: tl.constexpr, HEAD_DIM: tl.constexpr):
+    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * HEAD_DIM +
+                tl.arange(0, HEAD_DIM)[None, :])
     kp = tl.make_block_ptr(k_ptr, (N_k, HEAD_DIM), (HEAD_DIM, 1), (0, 0),
                            (BLOCK_K, HEAD_DIM), (1, 0))
     vp = tl.make_block_ptr(v_ptr, (N_k, HEAD_DIM), (HEAD_DIM, 1), (0, 0),
@@ -53,15 +53,16 @@ def _fa_one_loop(q_ptr, k_ptr, v_ptr, o_ptr, N_k, SPLIT,
     nblk = tl.cdiv(N_k, BLOCK_K)
     for _ in range(0, nblk):
         o, kp, vp = _body(q, kp, vp, o, BLOCK_K=BLOCK_K)
-    tl.store(o_ptr + tl.arange(0, BLOCK_Q)[:, None] * HEAD_DIM
-             + tl.arange(0, HEAD_DIM)[None, :], o.to(tl.float16))
+    tl.store(
+        o_ptr + tl.arange(0, BLOCK_Q)[:, None] * HEAD_DIM +
+        tl.arange(0, HEAD_DIM)[None, :], o.to(tl.float16))
 
 
 @triton.jit
-def _fa_two_loop(q_ptr, k_ptr, v_ptr, o_ptr, N_k, SPLIT,
-                 BLOCK_Q: tl.constexpr, BLOCK_K: tl.constexpr, HEAD_DIM: tl.constexpr):
-    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * HEAD_DIM
-                + tl.arange(0, HEAD_DIM)[None, :])
+def _fa_two_loop(q_ptr, k_ptr, v_ptr, o_ptr, N_k, SPLIT, BLOCK_Q: tl.constexpr,
+                 BLOCK_K: tl.constexpr, HEAD_DIM: tl.constexpr):
+    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * HEAD_DIM +
+                tl.arange(0, HEAD_DIM)[None, :])
     kp = tl.make_block_ptr(k_ptr, (N_k, HEAD_DIM), (HEAD_DIM, 1), (0, 0),
                            (BLOCK_K, HEAD_DIM), (1, 0))
     vp = tl.make_block_ptr(v_ptr, (N_k, HEAD_DIM), (HEAD_DIM, 1), (0, 0),
@@ -74,16 +75,17 @@ def _fa_two_loop(q_ptr, k_ptr, v_ptr, o_ptr, N_k, SPLIT,
     # 段2：[SPLIT, nblk)  —— 循环体与段1 完全相同
     for _ in range(SPLIT, nblk):
         o, kp, vp = _body(q, kp, vp, o, BLOCK_K=BLOCK_K)
-    tl.store(o_ptr + tl.arange(0, BLOCK_Q)[:, None] * HEAD_DIM
-             + tl.arange(0, HEAD_DIM)[None, :], o.to(tl.float16))
+    tl.store(
+        o_ptr + tl.arange(0, BLOCK_Q)[:, None] * HEAD_DIM +
+        tl.arange(0, HEAD_DIM)[None, :], o.to(tl.float16))
 
 
 def probe(kern, q, k, v, o, n_k, split, bq, bk, d):
     try:
-        kern[(1,)](q, k, v, o, n_k, split, BLOCK_Q=bq, BLOCK_K=bk, HEAD_DIM=d)
+        kern[(1, )](q, k, v, o, n_k, split, BLOCK_Q=bq, BLOCK_K=bk, HEAD_DIM=d)
         torch.npu.synchronize()
         return None, "OK"
-    except Exception as exc:                                   # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         msg = str(exc)
         m = re.search(r"requires (\d+) bits while (\d+) bits", msg)
         if m:
@@ -116,7 +118,9 @@ def main():
     for bq, bk in tiles:
         q = torch.randn(bq * d, dtype=torch.float16, device="npu")
         o = torch.zeros(bq * d, dtype=torch.float16, device="npu")
-        print(f"\n{'=' * 62}\ntile = ({bq}, {bk})   N_k = {n}   split = {args.split} 个 tile\n{'=' * 62}")
+        print(
+            f"\n{'=' * 62}\ntile = ({bq}, {bk})   N_k = {n}   split = {args.split} 个 tile\n{'=' * 62}"
+        )
         res = {}
         for tag, kern in (("1-loop", _fa_one_loop), ("2-loop", _fa_two_loop)):
             bits, info = probe(kern, q, k, v, o, n, args.split, bq, bk, d)
@@ -124,13 +128,16 @@ def main():
             if bits is None:
                 print(f"  {tag:<8} {info}")
             else:
-                print(f"  {tag:<8} requires {bits:>9,} bits = {bits / 8 / 1024:>8.1f} KB")
+                print(
+                    f"  {tag:<8} requires {bits:>9,} bits = {bits / 8 / 1024:>8.1f} KB")
 
         a, b = res["1-loop"], res["2-loop"]
         if isinstance(a, int) and isinstance(b, int):
             d_bits = b - a
-            one_kv = bk * d * 2 * 2          # k + v 各一份 fp16 tile
-            print(f"\n  Δ(2-loop − 1-loop) = {d_bits:+,} bits = {d_bits / 8 / 1024:+.1f} KB")
+            one_kv = bk * d * 2 * 2  # k + v 各一份 fp16 tile
+            print(
+                f"\n  Δ(2-loop − 1-loop) = {d_bits:+,} bits = {d_bits / 8 / 1024:+.1f} KB"
+            )
             print(f"  一个 k/v 副本 = {one_kv / 1024:.1f} KB"
                   f" ⇒ Δ 相当于 {d_bits / 8 / one_kv:+.2f} 份")
             if abs(d_bits) < one_kv * 8 * 0.1:

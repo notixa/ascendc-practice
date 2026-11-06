@@ -106,8 +106,7 @@ def mc_code_gen(kn, argn, argt, blknum):
     for i in range(0, core_num):
         proc_name = "{}_blk{:02d}".format(kernel_name, i)
         codes.append(
-            gen_fun_def(proc_title, proc_name, arg_num, arg_type, arg_name) + ";"
-        )
+            gen_fun_def(proc_title, proc_name, arg_num, arg_type, arg_name) + ";")
     codes.append(gen_fun_def(kernel_title, kernel_name, arg_num, arg_type, arg_name))
     codes.append(gen_mc_kernel_body(kernel_name, arg_num, arg_name, core_num))
     for i in range(0, core_num):

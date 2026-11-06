@@ -12,7 +12,6 @@ import collections
 import shutil
 import subprocess
 import copy
-
 """CODE_* is used to cube/vector api is called in operator code
 CODE_MIX means both cube and vector api is called
 CODE_CUBE means only cube api is called

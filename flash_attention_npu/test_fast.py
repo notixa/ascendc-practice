@@ -64,8 +64,7 @@ def run_fast_case(N_q, N_k, d, scale=None):
 
     # 4. Custom Backward (isolated with golden O, L)
     dq_custom, dk_custom, dv_custom = flash_attention_npu.backward(
-        do_npu, q_npu, k_npu, v_npu, o_ref_npu, l_ref_npu, scale
-    )
+        do_npu, q_npu, k_npu, v_npu, o_ref_npu, l_ref_npu, scale)
     if has_npu:
         torch.npu.synchronize()
 

@@ -44,15 +44,24 @@ for p in (_ROOT, os.path.join(_ROOT, "triton_lab"), _HERE):
         sys.path.insert(0, p)
 
 CONFIGS = {
-    "base":     {},
-    "preload":  {"enable_preload": True},
-    "nopreload": {"enable_preload": False},
-    "dcp":      {"enable_dynamic_cv_pipeline": True},
-    "both":     {"enable_preload": True, "enable_dynamic_cv_pipeline": True},
+    "base": {},
+    "preload": {
+        "enable_preload": True
+    },
+    "nopreload": {
+        "enable_preload": False
+    },
+    "dcp": {
+        "enable_dynamic_cv_pipeline": True
+    },
+    "both": {
+        "enable_preload": True,
+        "enable_dynamic_cv_pipeline": True
+    },
 }
 
 KERNELS = {
-    "fa":     ("kernels.flash_attention.fa_fwd", 30),
+    "fa": ("kernels.flash_attention.fa_fwd", 30),
     "manual": ("kernels.flash_attention.fa_fwd_manual", 43),
 }
 
@@ -78,7 +87,7 @@ def golden(q, causal):
     import torch
     n = q.shape[1]
     qf = q.float().permute(0, 2, 1, 3)
-    s = qf @ qf.transpose(-1, -2) * (q.shape[3] ** -0.5)
+    s = qf @ qf.transpose(-1, -2) * (q.shape[3]**-0.5)
     if causal:
         m = torch.tril(torch.ones(n, n, device=q.device, dtype=torch.bool))
         s = s.masked_fill(~m, float("-inf"))
@@ -142,7 +151,9 @@ def main():
         try:
             mod = __import__(mod_name, fromlist=["fla_fwd"])
         except Exception:
-            print(f"{ktag:<8}{'(import)':<12}  ✗ {traceback.format_exc(limit=1).strip().splitlines()[-1][:60]}")
+            print(
+                f"{ktag:<8}{'(import)':<12}  ✗ {traceback.format_exc(limit=1).strip().splitlines()[-1][:60]}"
+            )
             continue
         base_ms = None
         for ctag in want_configs:
@@ -156,23 +167,33 @@ def main():
                 for q, causal, ref in corr:
                     o = mod.fla_fwd(q, q, q, causal=causal)
                     torch.npu.synchronize()
-                    worst = max(worst,
-                                (o.float() - ref).abs().max().item() / (ref.abs().max().item() + 1e-6))
+                    worst = max(worst, (o.float() - ref).abs().max().item() /
+                                (ref.abs().max().item() + 1e-6))
                 if not (worst < O_ERR_TOL):
                     status = "★精度不合格"
                 med = timeit(lambda: mod.fla_fwd(pq, pq, pq, causal=pcausal),
                              args.iters, args.reps, args.warmup)
             except Exception:
-                status = "✗ " + traceback.format_exc(limit=1).strip().splitlines()[-1][:52]
+                status = "✗ " + traceback.format_exc(
+                    limit=1).strip().splitlines()[-1][:52]
             tf = pflops / (med * 1e-3) / 1e12 if med == med else float("nan")
             if ctag == "base" and med == med:
                 base_ms = med
             ratio = (base_ms / med) if (base_ms and med == med) else float("nan")
-            results.append({"kernel": ktag, "config": ctag, "opts": opts,
-                            "max_o_err": worst, "median_ms": med, "tflops": tf,
-                            "vs_base": ratio, "status": status})
-            print(f"{ktag:<8}{ctag:<12}{worst:>11.5f}{med:>12.3f}{tf:>9.1f}"
-                  f"{(f'{ratio:.3f}x' if ratio == ratio else '-'):>10}  {status}", flush=True)
+            results.append({
+                "kernel": ktag,
+                "config": ctag,
+                "opts": opts,
+                "max_o_err": worst,
+                "median_ms": med,
+                "tflops": tf,
+                "vs_base": ratio,
+                "status": status
+            })
+            print(
+                f"{ktag:<8}{ctag:<12}{worst:>11.5f}{med:>12.3f}{tf:>9.1f}"
+                f"{(f'{ratio:.3f}x' if ratio == ratio else '-'):>10}  {status}",
+                flush=True)
         print("-" * len(hdr), flush=True)
 
     with open(args.out, "w", encoding="utf-8") as f:

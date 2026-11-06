@@ -271,15 +271,17 @@ def optype_snake_ex(s):
 
 
 class AdpBuilder(opdesc_parser.OpDesc):
+
     def __init__(self: any, op_type: str):
         self.argsname = []
         self.argsdefv = []
         self.op_compile_option: str = "{}"
         super().__init__(op_type)
 
-    def write_adapt(
-        self: any, impl_path, path: str, op_compile_option_all: list = None
-    ):
+    def write_adapt(self: any,
+                    impl_path,
+                    path: str,
+                    op_compile_option_all: list = None):
         self._build_paradefault()
         if impl_path != "":
             src_file = os.path.join(impl_path, self.op_file + ".cpp")
@@ -409,8 +411,7 @@ class AdpBuilder(opdesc_parser.OpDesc):
                 continue
             if optional:
                 self.argsdefv.append(
-                    ATTR_DEFAULT.get(self.attr_val.get(attr).get("type"))
-                )
+                    ATTR_DEFAULT.get(self.attr_val.get(attr).get("type")))
             else:
                 self.argsdefv.append(None)
 
@@ -443,11 +444,8 @@ class AdpBuilder(opdesc_parser.OpDesc):
             fd.write("    if {} != None:\n".format(attr))
             fd.write("        attr = {}\n")
             fd.write('        attr["name"] = "{}"\n'.format(attr))
-            fd.write(
-                '        attr["dtype"] = "{}"\n'.format(
-                    self.attr_val.get(attr).get("type")
-                )
-            )
+            fd.write('        attr["dtype"] = "{}"\n'.format(
+                self.attr_val.get(attr).get("type")))
             fd.write('        attr["value"] = {}\n'.format(attr))
             fd.write("        __attrs__.append(attr)\n")
         fd.write("    return __inputs__, __outputs__, __attrs__\n")
@@ -475,8 +473,7 @@ class AdpBuilder(opdesc_parser.OpDesc):
                 optype_snake_ex(self.op_type),
                 optype_snake(self.op_type),
                 src,
-            )
-        )
+            ))
         if self.op_replay_flag:
             fd.write(
                 REPLAY_OP_API.format(
@@ -486,8 +483,7 @@ class AdpBuilder(opdesc_parser.OpDesc):
                     self.op_type,
                     self.op_file,
                     self.op_compile_option,
-                )
-            )
+                ))
         else:
             fd.write(
                 COMPILE_OP_API.format(
@@ -496,8 +492,7 @@ class AdpBuilder(opdesc_parser.OpDesc):
                     ", ".join(self.input_name),
                     ", ".join(self.output_name),
                     self.op_compile_option,
-                )
-            )
+                ))
 
     def _write_cap(self: any, cap_name: str, fd: object):
         argsdef = self._build_paralist()
@@ -511,8 +506,7 @@ class AdpBuilder(opdesc_parser.OpDesc):
         argsdef = self._build_paralist()
         argsval = self._build_paralist(False)
         fd.write(
-            GLZ_API.format(self.op_type, self.op_intf, argsdef, argsval, self.op_type)
-        )
+            GLZ_API.format(self.op_type, self.op_intf, argsdef, argsval, self.op_type))
 
 
 def write_scripts(

@@ -32,8 +32,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 
 KERNEL_RE = re.compile(
-    r"^@triton\.jit\ndef fla_fwd_kernel\(.*?(?=^@triton\.jit|^def |\Z)",
-    re.S | re.M)
+    r"^@triton\.jit\ndef fla_fwd_kernel\(.*?(?=^@triton\.jit|^def |\Z)", re.S | re.M)
 
 HDR = """\
 import os
@@ -116,22 +115,22 @@ def run_bishengir(mlirbc: str, workdir: str, tag: str) -> str:
     outdir = os.path.join(workdir, f"ir_{tag}")
     os.makedirs(outdir, exist_ok=True)
     out = os.path.join(outdir, "k")
-    cmd = [bc, mlirbc,
-           "--target=Ascend910B3",
-           "--enable-hfusion-compile=true",
-           "--enable-hivm-compile=true",
-           "--enable-triton-kernel-compile=true",
-           "--enable-auto-multi-buffer=True",
-           "--enable-auto-bind-sub-block=True",
-           "-o", out]
+    cmd = [
+        bc, mlirbc, "--target=Ascend910B3", "--enable-hfusion-compile=true",
+        "--enable-hivm-compile=true", "--enable-triton-kernel-compile=true",
+        "--enable-auto-multi-buffer=True", "--enable-auto-bind-sub-block=True", "-o",
+        out
+    ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     shutil.rmtree(outdir, ignore_errors=True)
     return r.stderr
 
 
 def summarize(ir: str) -> dict:
+
     def cnt(pat):
         return len(re.findall(pat, ir))
+
     return {
         "IR 行数": len(ir.splitlines()),
         "func.func": cnt(r"func\.func"),
@@ -150,8 +149,8 @@ def summarize(ir: str) -> dict:
 
 def show_sync_context(ir: str, max_lines: int = 26, tag: str = ""):
     """把 sync/converter 相关的关键行按顺序列出来，看 store→load 之间有没有 sync。"""
-    keys = ("sync_block_set", "sync_block_wait", "fixpipe", "hivm.hir.mmad",
-            "nd2nz", "multi_buffer_counter")
+    keys = ("sync_block_set", "sync_block_wait", "fixpipe", "hivm.hir.mmad", "nd2nz",
+            "multi_buffer_counter")
     print(f"\n  ── {tag}: 关键指令序列（去重连续相同项）──")
     print("     （只显示 aic 或 aiv 中指令更多的那个 function）")
     # 取 sync 数最多的那个 function
@@ -186,16 +185,25 @@ def main():
     a = ap.parse_args()
 
     files = {
-        "fa_fwd": os.path.join(_ROOT, "triton_lab/kernels/flash_attention/fa_fwd.py"),
-        "manual": os.path.join(_ROOT, "triton_lab/kernels/flash_attention/fa_fwd_manual.py"),
+        "fa_fwd":
+        os.path.join(_ROOT, "triton_lab/kernels/flash_attention/fa_fwd.py"),
+        "manual":
+        os.path.join(_ROOT, "triton_lab/kernels/flash_attention/fa_fwd_manual.py"),
     }
     constexpr_vals = {
-        "N_q": a.nq, "N_k": a.nk, "delta_qk": a.nk - a.nq,
-        "BLOCK_Q": a.bq, "BLOCK_K": a.bk, "HEAD_DIM": 128,
-        "IS_CAUSAL": True, "NVEC": a.nvec,
+        "N_q": a.nq,
+        "N_k": a.nk,
+        "delta_qk": a.nk - a.nq,
+        "BLOCK_Q": a.bq,
+        "BLOCK_K": a.bk,
+        "HEAD_DIM": 128,
+        "IS_CAUSAL": True,
+        "NVEC": a.nvec,
     }
     print(f"\n{'='*100}")
-    print(f"配置: BLOCK_Q={a.bq} BLOCK_K={a.bk} N_q={a.nq} N_k={a.nk} causal=True NVEC={a.nvec}")
+    print(
+        f"配置: BLOCK_Q={a.bq} BLOCK_K={a.bk} N_q={a.nq} N_k={a.nk} causal=True NVEC={a.nvec}"
+    )
     print(f"{'='*100}")
 
     workdir = tempfile.mkdtemp(prefix="irdiff_", dir=os.path.join(_ROOT, ".scratch"))

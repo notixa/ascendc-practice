@@ -72,8 +72,7 @@ def run_tests():
 
     all_passed = True
     print(
-        f"{'Case':<55} | {'Shape':<16} | {'Dtype':<8} | {'Max Diff':<10} | {'Status'}"
-    )
+        f"{'Case':<55} | {'Shape':<16} | {'Dtype':<8} | {'Max Diff':<10} | {'Status'}")
     print("-" * 105)
 
     for shape, dtype, desc in test_cases:

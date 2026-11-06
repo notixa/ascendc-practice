@@ -105,9 +105,8 @@ def make_vendor():
         if key not in _mask:
             # atten_mask 语义：True = 被屏蔽（不参与计算）
             # causal → 屏蔽上三角（future），对角线保留（自己看自己）
-            _mask[key] = torch.triu(
-                torch.ones((n, n), dtype=torch.bool, device=device), diagonal=1
-            )
+            _mask[key] = torch.triu(torch.ones((n, n), dtype=torch.bool, device=device),
+                                    diagonal=1)
         return _mask[key]
 
     def _call(q, k, v, causal, variant):
@@ -165,8 +164,7 @@ def make_triton():
         except TypeError:
             if causal:
                 raise RuntimeError(
-                    "fla_fwd 还不支持 causal 参数 —— 先在 triton_lab 里实现（见 bench/README.md）"
-                )
+                    "fla_fwd 还不支持 causal 参数 —— 先在 triton_lab 里实现（见 bench/README.md）")
             o = fla_fwd(q_bnhd, k_bnhd, v_bnhd)
         return o
 
@@ -242,10 +240,10 @@ def main():
         default=os.path.join(ROOT, "catlass_lab/catlass_op/build/libcatlass_fat.so"),
     )
     ap.add_argument("--atol", type=float, default=2e-2)
-    ap.add_argument("--cases", default=None,
+    ap.add_argument("--cases",
+                    default=None,
                     help="覆盖内置 CASES，格式 N:H[,N:H...]（B=1, D=128）")
-    ap.add_argument("--json", default=None,
-                    help="把逐 case 结果写成 JSON（供 bench_all.py 汇总）")
+    ap.add_argument("--json", default=None, help="把逐 case 结果写成 JSON（供 bench_all.py 汇总）")
     args = ap.parse_args()
 
     cases = CASES
@@ -282,9 +280,7 @@ def main():
     rows = []
     for batch, heads, n, d in cases:
         if d != 128:
-            print(
-                f"skip B={batch} H={heads} N={n} D={d}（CATLASS 只支持 head_dim=128）"
-            )
+            print(f"skip B={batch} H={heads} N={n} D={d}（CATLASS 只支持 head_dim=128）")
             continue
 
         torch.manual_seed(0)
@@ -296,11 +292,8 @@ def main():
 
         for causal in modes:
             tag = "causal" if causal else "full  "
-            ref = (
-                None
-                if args.skip_correctness
-                else golden(q.cpu(), k.cpu(), v.cpu(), causal)
-            )
+            ref = (None if args.skip_correctness else golden(q.cpu(), k.cpu(), v.cpu(),
+                                                             causal))
 
             for name, fn in backends.items():
                 tag_g = ""
@@ -312,9 +305,13 @@ def main():
                     # call(q,k,v,causal) —— 与 bench_fa 的 backend 签名一致；
                     # 闭包里固定 block_dim 默认值，避免捕获时依赖外部变量
                     _fn = fn
-                    gf = GraphedFA(batch, n, heads, d,
+                    gf = GraphedFA(batch,
+                                   n,
+                                   heads,
+                                   d,
                                    call=lambda a, b, c, cc: _fn(a, b, c, cc),
-                                   causal=causal, label=name)
+                                   causal=causal,
+                                   label=name)
                     if args.graph_copy:
                         call = lambda: gf(q, k, v)  # 图 + 输入拷贝（真实口径）
                         tag_g = " [图+拷贝]"
@@ -349,31 +346,39 @@ def main():
                     continue
                 f = flops_of(batch, heads, n, d, causal)
                 tflops = f / (med * 1e-3) / 1e12
-                peak = (
-                    f"  {100.0 * tflops / args.peak_tflops:5.1f}% peak"
-                    if args.peak_tflops
-                    else ""
-                )
+                peak = (f"  {100.0 * tflops / args.peak_tflops:5.1f}% peak"
+                        if args.peak_tflops else "")
                 warn = "  ⚠ 波动大" if spread > 0.10 else ""
                 print(
                     f"  [{tag}]     {name:<8}{tag_g} {med:8.3f} ms  [{lo:.3f}, {hi:.3f}]  "
-                    f"{tflops:7.1f} TFLOPS{peak}{warn}"
-                )
+                    f"{tflops:7.1f} TFLOPS{peak}{warn}")
                 rows.append((name, causal, batch, heads, n, med, tflops))
-                json_rows.append({"name": name, "causal": int(bool(causal)), "batch": batch,
-                                  "heads": heads, "n": n, "d": 128, "ms": med,
-                                  "tflops": tflops})
+                json_rows.append({
+                    "name": name,
+                    "causal": int(bool(causal)),
+                    "batch": batch,
+                    "heads": heads,
+                    "n": n,
+                    "d": 128,
+                    "ms": med,
+                    "tflops": tflops
+                })
 
                 # 顺便把 device-only 时间也打出来，方便和上面的数对比
                 if gf is not None:
                     med_r, lo_r, hi_r, _ = timeit(gf.replay_only)
-                    json_rows.append({"name": name + "-device", "causal": int(bool(causal)),
-                                      "batch": batch, "heads": heads, "n": n, "d": 128,
-                                      "ms": med_r, "tflops": float("nan")})
-                    print(
-                        f"  [{tag}]       └─ device-only (纯 replay) {med_r:8.3f} ms  "
-                        f"[{lo_r:.3f}, {hi_r:.3f}]"
-                    )
+                    json_rows.append({
+                        "name": name + "-device",
+                        "causal": int(bool(causal)),
+                        "batch": batch,
+                        "heads": heads,
+                        "n": n,
+                        "d": 128,
+                        "ms": med_r,
+                        "tflops": float("nan")
+                    })
+                    print(f"  [{tag}]       └─ device-only (纯 replay) {med_r:8.3f} ms  "
+                          f"[{lo_r:.3f}, {hi_r:.3f}]")
                     del gf  # 及时释放图内存池
         print()
 
@@ -383,13 +388,10 @@ def main():
         for name, causal, batch, heads, n, med, tflops in rows:
             by_case.setdefault((causal, batch, heads, n), {})[name] = med
         print("=" * 74)
-        print(
-            f"{'mode':<8}{'case':<20}{'catlass':>11}{'triton':>11}{'vendor':>11}"
-            f"{'triton/vendor':>15}"
-        )
-        for (causal, batch, heads, n), d_ in sorted(
-            by_case.items(), key=lambda x: (x[0][0], x[0][3])
-        ):
+        print(f"{'mode':<8}{'case':<20}{'catlass':>11}{'triton':>11}{'vendor':>11}"
+              f"{'triton/vendor':>15}")
+        for (causal, batch, heads, n), d_ in sorted(by_case.items(),
+                                                    key=lambda x: (x[0][0], x[0][3])):
             c = d_.get("catlass", float("nan"))
             t = d_.get("triton", float("nan"))
             vd = d_.get("vendor", float("nan"))
@@ -397,16 +399,13 @@ def main():
             mode = "causal" if causal else "full"
             print(
                 f"{mode:<8}{f'B{batch} H{heads} N{n}':<20}{c:>11.3f}{t:>11.3f}{vd:>11.3f}"
-                f"{ratio:>15.2f}x"
-            )
+                f"{ratio:>15.2f}x")
         print("=" * 74)
         print("triton/vendor > 1 表示我们的 Triton kernel 比厂商慢，< 1 表示更快")
         if args.graph:
             print("⚠ 本次启用了图捕获：数字里已没有 Triton 的 Python launcher 开销，")
             print("  不可与未开图的结果、或与 CATLASS（C++ 直调）横向比较。")
-        print(
-            "注意：causal 行两边 FLOPs 相同，但绝对 FLOPs 只有 full 的一半，不要跨行比较 TFLOPS"
-        )
+        print("注意：causal 行两边 FLOPs 相同，但绝对 FLOPs 只有 full 的一半，不要跨行比较 TFLOPS")
 
     if args.json:
         import json as _json

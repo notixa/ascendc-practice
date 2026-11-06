@@ -14,16 +14,24 @@ import triton.language as tl
 
 
 @triton.jit
-def k_hold(q_ptr, k_ptr, ws_ptr, o_ptr, N,
-           BLOCK_Q: tl.constexpr, BK: tl.constexpr, DIM: tl.constexpr):
-    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * DIM
-                + tl.arange(0, DIM)[None, :])
+def k_hold(q_ptr, k_ptr, ws_ptr, o_ptr, N, BLOCK_Q: tl.constexpr, BK: tl.constexpr,
+           DIM: tl.constexpr):
+    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * DIM +
+                tl.arange(0, DIM)[None, :])
     acc = tl.zeros([BLOCK_Q], tl.float32)
     for base in range(0, N, 4 * BK):
-        k0 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 0 * BK, 0), (BK, DIM), (1, 0)))
-        k1 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 1 * BK, 0), (BK, DIM), (1, 0)))
-        k2 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 2 * BK, 0), (BK, DIM), (1, 0)))
-        k3 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 3 * BK, 0), (BK, DIM), (1, 0)))
+        k0 = tl.load(
+            tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 0 * BK, 0), (BK, DIM),
+                              (1, 0)))
+        k1 = tl.load(
+            tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 1 * BK, 0), (BK, DIM),
+                              (1, 0)))
+        k2 = tl.load(
+            tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 2 * BK, 0), (BK, DIM),
+                              (1, 0)))
+        k3 = tl.load(
+            tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 3 * BK, 0), (BK, DIM),
+                              (1, 0)))
         s0 = tl.dot(q, tl.trans(k0))
         s1 = tl.dot(q, tl.trans(k1))
         s2 = tl.dot(q, tl.trans(k2))
@@ -34,27 +42,39 @@ def k_hold(q_ptr, k_ptr, ws_ptr, o_ptr, N,
 
 
 @triton.jit
-def k_spill(q_ptr, k_ptr, ws_ptr, o_ptr, N,
-            BLOCK_Q: tl.constexpr, BK: tl.constexpr, DIM: tl.constexpr):
-    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * DIM
-                + tl.arange(0, DIM)[None, :])
+def k_spill(q_ptr, k_ptr, ws_ptr, o_ptr, N, BLOCK_Q: tl.constexpr, BK: tl.constexpr,
+            DIM: tl.constexpr):
+    q = tl.load(q_ptr + tl.arange(0, BLOCK_Q)[:, None] * DIM +
+                tl.arange(0, DIM)[None, :])
     acc = tl.zeros([BLOCK_Q], tl.float32)
     pid = tl.program_id(0)
     slot = pid * (4 * BLOCK_Q * BK)
     for base in range(0, N, 4 * BK):
         # ---- 阶段 1：每个 dot 之后立刻落盘，s_i 的生命周期在此终止 ----
-        kw0 = tl.make_block_ptr(ws_ptr + slot + 0 * BLOCK_Q * BK, (BLOCK_Q, BK), (BK, 1), (0, 0), (BLOCK_Q, BK), (1, 0))
-        kw1 = tl.make_block_ptr(ws_ptr + slot + 1 * BLOCK_Q * BK, (BLOCK_Q, BK), (BK, 1), (0, 0), (BLOCK_Q, BK), (1, 0))
-        kw2 = tl.make_block_ptr(ws_ptr + slot + 2 * BLOCK_Q * BK, (BLOCK_Q, BK), (BK, 1), (0, 0), (BLOCK_Q, BK), (1, 0))
-        kw3 = tl.make_block_ptr(ws_ptr + slot + 3 * BLOCK_Q * BK, (BLOCK_Q, BK), (BK, 1), (0, 0), (BLOCK_Q, BK), (1, 0))
+        kw0 = tl.make_block_ptr(ws_ptr + slot + 0 * BLOCK_Q * BK, (BLOCK_Q, BK),
+                                (BK, 1), (0, 0), (BLOCK_Q, BK), (1, 0))
+        kw1 = tl.make_block_ptr(ws_ptr + slot + 1 * BLOCK_Q * BK, (BLOCK_Q, BK),
+                                (BK, 1), (0, 0), (BLOCK_Q, BK), (1, 0))
+        kw2 = tl.make_block_ptr(ws_ptr + slot + 2 * BLOCK_Q * BK, (BLOCK_Q, BK),
+                                (BK, 1), (0, 0), (BLOCK_Q, BK), (1, 0))
+        kw3 = tl.make_block_ptr(ws_ptr + slot + 3 * BLOCK_Q * BK, (BLOCK_Q, BK),
+                                (BK, 1), (0, 0), (BLOCK_Q, BK), (1, 0))
 
-        k0 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 0 * BK, 0), (BK, DIM), (1, 0)))
+        k0 = tl.load(
+            tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 0 * BK, 0), (BK, DIM),
+                              (1, 0)))
         tl.store(kw0, tl.dot(q, tl.trans(k0)))
-        k1 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 1 * BK, 0), (BK, DIM), (1, 0)))
+        k1 = tl.load(
+            tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 1 * BK, 0), (BK, DIM),
+                              (1, 0)))
         tl.store(kw1, tl.dot(q, tl.trans(k1)))
-        k2 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 2 * BK, 0), (BK, DIM), (1, 0)))
+        k2 = tl.load(
+            tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 2 * BK, 0), (BK, DIM),
+                              (1, 0)))
         tl.store(kw2, tl.dot(q, tl.trans(k2)))
-        k3 = tl.load(tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 3 * BK, 0), (BK, DIM), (1, 0)))
+        k3 = tl.load(
+            tl.make_block_ptr(k_ptr, (N, DIM), (DIM, 1), (base + 3 * BK, 0), (BK, DIM),
+                              (1, 0)))
         tl.store(kw3, tl.dot(q, tl.trans(k3)))
 
         # ---- 阶段 2：逐块读回，UB 里同时只有 1 份 s ----

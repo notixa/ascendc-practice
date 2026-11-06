@@ -19,7 +19,8 @@ import sys
 import torch
 import torch_npu
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "triton_lab"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "triton_lab"))
 
 from kernels.flash_attention.fa_fwd import fla_fwd  # noqa: E402
 
@@ -36,7 +37,7 @@ CASES = [
     (1, 384, 8, False),
     (1, 512, 8, True),
     (1, 512, 8, False),
-    (1, 1024, 8, False),   # 覆盖 (64,512) 的多迭代 non-causal 路径
+    (1, 1024, 8, False),  # 覆盖 (64,512) 的多迭代 non-causal 路径
     (1, 4096, 32, True),
 ]
 
@@ -59,10 +60,8 @@ def check_one(b, n, h, causal):
     o_err = (o.cpu().float() - ref_o).abs().max().item()
 
     ok = o_err < O_TOL
-    print(
-        f"  B{b} N{n:>5} H{h:<2} causal={str(causal):<5}"
-        f"  o_err={o_err:.5f}  {'OK' if ok else 'FAIL'}"
-    )
+    print(f"  B{b} N{n:>5} H{h:<2} causal={str(causal):<5}"
+          f"  o_err={o_err:.5f}  {'OK' if ok else 'FAIL'}")
     return ok
 
 
@@ -97,7 +96,9 @@ def perf():
     # 结果 `grep -oE "[0-9]+\.[0-9]+ ms"` 会把它们抓进去，
     # 让 5 次测量显示成"全是 3.658 ms、极差 0.0%"—— 纯属假数据。
     # 要留历史数字请写进 README 或注释，不要 print 到 stdout。
-    print(f"\n[perf] B{b} N{n} H{h} causal={causal}:  {ms:.3f} ms   {flops / (ms * 1e-3) / 1e12:.1f} TFLOPS")
+    print(
+        f"\n[perf] B{b} N{n} H{h} causal={causal}:  {ms:.3f} ms   {flops / (ms * 1e-3) / 1e12:.1f} TFLOPS"
+    )
 
 
 def main():

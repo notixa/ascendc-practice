@@ -45,13 +45,13 @@ RE_MAXERR = re.compile(r"max_err = ([0-9.]+|skipped)")
 #   多 batch：B=4~16，短序列（吞吐场景）
 PRESETS = {
     "realistic": [
-        (1, 512, 8),     # 小序列 prefill
-        (1, 2048, 8),    # 典型 prefill
-        (1, 4096, 8),    # 长上下文 prefill
-        (1, 2048, 32),   # 多 head（13B 级），任务数足
-        (1, 4096, 32),   # 长上下文 + 多 head
-        (4, 2048, 8),    # 多 batch
-        (16, 512, 8),    # 多 batch 短序列（吞吐）
+        (1, 512, 8),  # 小序列 prefill
+        (1, 2048, 8),  # 典型 prefill
+        (1, 4096, 8),  # 长上下文 prefill
+        (1, 2048, 32),  # 多 head（13B 级），任务数足
+        (1, 4096, 32),  # 长上下文 + 多 head
+        (4, 2048, 8),  # 多 batch
+        (16, 512, 8),  # 多 batch 短序列（吞吐）
     ],
     "large": [
         (1, 2048, 8),
@@ -88,11 +88,13 @@ def bench_catlass(b, n, h, causal, iters, core_num):
     m = RE_MEDIAN.search(out)
     if rc != 0 or not m:
         tail = "\n".join(out.strip().splitlines()[-3:])
-        print(f"  [catlass] B={b} N={n} H={h} c={causal} 未取到 PERF (rc={rc}): {tail}", file=sys.stderr)
+        print(f"  [catlass] B={b} N={n} H={h} c={causal} 未取到 PERF (rc={rc}): {tail}",
+              file=sys.stderr)
         return None, None, None
     t = RE_TFLOPS.search(out)
     e = RE_MAXERR.search(out)
-    return float(m.group(1)), (float(t.group(1)) if t else None), (e.group(1) if e else "?")
+    return float(
+        m.group(1)), (float(t.group(1)) if t else None), (e.group(1) if e else "?")
 
 
 def bench_torch_backend(shapes, mode, extra_args, label):
@@ -102,8 +104,9 @@ def bench_torch_backend(shapes, mode, extra_args, label):
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
         jpath = tf.name
     try:
-        cmd = [sys.executable, BENCH_FA, "--json", jpath, "--cases", cases,
-               "--mode", mode] + extra_args
+        cmd = [
+            sys.executable, BENCH_FA, "--json", jpath, "--cases", cases, "--mode", mode
+        ] + extra_args
         rc, txt = run(cmd)
         if not os.path.isfile(jpath):
             print(f"  [{label}] 未产生 json (rc={rc}):\n{txt[-600:]}", file=sys.stderr)
@@ -111,7 +114,8 @@ def bench_torch_backend(shapes, mode, extra_args, label):
         with open(jpath) as f:
             rows = json.load(f)
         for r in rows:
-            out[(r["causal"], r["n"], r["heads"], r["batch"], r["name"])] = (r["ms"], r["tflops"])
+            out[(r["causal"], r["n"], r["heads"], r["batch"],
+                 r["name"])] = (r["ms"], r["tflops"])
     finally:
         if os.path.exists(jpath):
             os.unlink(jpath)
@@ -126,10 +130,11 @@ def flops_of(b, n, h, d, causal):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--preset", choices=list(PRESETS), default=None)
-    ap.add_argument("--shapes", default=None,
-                    help="N:H 或 B:N:H 列表，逗号分隔；与 --preset 二选一")
+    ap.add_argument("--shapes", default=None, help="N:H 或 B:N:H 列表，逗号分隔；与 --preset 二选一")
     ap.add_argument("--modes", choices=["both", "causal", "full"], default="both")
-    ap.add_argument("--scope", choices=["device", "app", "both"], default="device",
+    ap.add_argument("--scope",
+                    choices=["device", "app", "both"],
+                    default="device",
                     help="device=C++直调/纯replay；app=走 torch launcher（真实部署）")
     ap.add_argument("--iters", type=int, default=20, help="CATLASS 每轮迭代数（device 口径）")
     ap.add_argument("--core-num", type=int, default=20, help="CATLASS AIC 核数（910B3=20）")
@@ -155,7 +160,8 @@ def main():
             uniq.append(s)
     shapes = uniq
 
-    causals = [0, 1] if args.modes == "both" else ([1] if args.modes == "causal" else [0])
+    causals = [0, 1
+               ] if args.modes == "both" else ([1] if args.modes == "causal" else [0])
 
     def say(*a):
         if not args.markdown:
@@ -175,7 +181,8 @@ def main():
                 if ms is not None:
                     cat_dev[(c, n, h, b)] = ms
                     say(f"  B{b} N={n:<5} H={h:<3} c={c}  {ms:8.4f} ms  "
-                        f"{(f'{tf:6.1f} TFLOPS' if tf else '       ? TFLOPS'):>16}  max_err={mae}")
+                        f"{(f'{tf:6.1f} TFLOPS' if tf else '       ? TFLOPS'):>16}  max_err={mae}"
+                        )
 
     # ---- CATLASS（app 口径：torch .so）----
     cat_app = {}
@@ -184,8 +191,8 @@ def main():
         # app 口径：CATLASS 走 torch .so，并用图捕获去掉 host launcher 开销
         #（裸 op 调用的固定 host 成本 ~0.19 ms，与 shape 无关，会把小 shape 全淹掉；
         #  确认过程见 bench_all.py 头部注释）
-        raw = bench_torch_backend(shapes, args.modes,
-                                  ["--only", "catlass", "--graph"], "catlass-app")
+        raw = bench_torch_backend(shapes, args.modes, ["--only", "catlass", "--graph"],
+                                  "catlass-app")
         for (c, n, h, b, name), (ms, _) in raw.items():
             if name == "catlass":
                 cat_app[(c, n, h, b)] = ms
@@ -198,14 +205,17 @@ def main():
     if not args.skip_triton:
         if args.scope in ("device", "both"):
             say("\n[3] Triton-Ascend / device 口径（--graph 的 replay-only 行）...")
-            raw = bench_torch_backend(shapes, args.modes, ["--only", "triton", "--graph"], "triton-dev")
+            raw = bench_torch_backend(shapes, args.modes,
+                                      ["--only", "triton", "--graph"], "triton-dev")
             for (c, n, h, b, name), (ms, _) in raw.items():
                 if name.endswith("-device"):
                     tri[(c, n, h, b)] = ms
-                    say(f"  B{b} N={n:<5} H={h:<3} c={c}  {ms:8.4f} ms  (device-only replay)")
+                    say(f"  B{b} N={n:<5} H={h:<3} c={c}  {ms:8.4f} ms  (device-only replay)"
+                        )
         if args.scope in ("app", "both"):
             say("\n[4] Triton-Ascend / app 口径（不带 --graph，含 launcher）...")
-            raw = bench_torch_backend(shapes, args.modes, ["--only", "triton"], "triton-app")
+            raw = bench_torch_backend(shapes, args.modes, ["--only", "triton"],
+                                      "triton-app")
             for (c, n, h, b, name), (ms, _) in raw.items():
                 if name == "triton":
                     tri[(c, n, h, b)] = ms
@@ -223,7 +233,8 @@ def main():
 
     # ---- 汇总 ----
     def tf(c, n, h, b, ms):
-        return None if (ms is None or ms <= 0) else flops_of(b, n, h, args.d, c) / (ms * 1e-3) / 1e12
+        return None if (ms is None or ms
+                        <= 0) else flops_of(b, n, h, args.d, c) / (ms * 1e-3) / 1e12
 
     def f(v, p=4):
         return f"{v:.{p}f}" if v is not None else "—"
@@ -267,12 +278,16 @@ def main():
     print()
     print("口径：")
     if show_dev:
-        print("  CATLASS      = fat_bench（C++/ACL 直调，warmup10 + iters×5 轮中位数，零 Python launcher）")
+        print(
+            "  CATLASS      = fat_bench（C++/ACL 直调，warmup10 + iters×5 轮中位数，零 Python launcher）"
+        )
         print("  Triton       = bench_fa.py --graph 的 device-only(纯 replay) 行")
     if show_app:
         print("  CATLASS(app) = bench_fa.py --only catlass --graph（torch + 图捕获）")
     print("  vendor       = npu_fusion_attention（含 torch launcher）")
-    print(f"  FLOPs        = 4 × B × H × pairs × D，pairs = N(N+1)/2 (causal) 或 N² (full)，D={args.d}")
+    print(
+        f"  FLOPs        = 4 × B × H × pairs × D，pairs = N(N+1)/2 (causal) 或 N² (full)，D={args.d}"
+    )
     print("  倍数 > 1 表示比 vendor 慢；causal 与 full 的绝对 FLOPs 不同，勿跨行比 TFLOPS")
     print("  vendor 的 causal 走它自己的 variant 阶梯（mask/sparse_mode），未必与我们的实现等价")
 

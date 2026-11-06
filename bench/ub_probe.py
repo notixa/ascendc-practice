@@ -56,7 +56,8 @@ KERNELS = {
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__)
+    ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 description=__doc__)
     ap.add_argument("--kernel", default="fa", choices=list(KERNELS))
     ap.add_argument("--tiles", default="64x256,96x256,128x256,64x512")
     ap.add_argument("--nq", type=int, default=4096)
@@ -77,8 +78,14 @@ def main():
         tiles.append((bq, bk))
 
     workdir = tempfile.mkdtemp(prefix="ubprobe_", dir=os.path.join(_ROOT, ".scratch"))
-    ce = {"N_q": args.nq, "N_k": args.nk, "delta_qk": args.nk - args.nq,
-          "HEAD_DIM": 128, "IS_CAUSAL": True, "NVEC": args.nvec}
+    ce = {
+        "N_q": args.nq,
+        "N_k": args.nk,
+        "delta_qk": args.nk - args.nq,
+        "HEAD_DIM": 128,
+        "IS_CAUSAL": True,
+        "NVEC": args.nvec
+    }
 
     results = {}
     for bq, bk in tiles:
@@ -102,7 +109,7 @@ def main():
             elif "error" in ir.lower() and "ub overflow" not in ir.lower():
                 row[name] = (None, None)  # 别的错误
             else:
-                row[name] = (0, 0.0)      # 编过 ⇒ 不需要额外 UB 报告
+                row[name] = (0, 0.0)  # 编过 ⇒ 不需要额外 UB 报告
         results[tag] = row
         print(f"  [{tag}] 采完 {len(row)} 组", flush=True)
 
@@ -121,7 +128,8 @@ def main():
             elif need == 0:
                 cells.append(f"{'✓ 装得下':>15}")
             else:
-                cells.append(f"{need/1024:.0f}K {'✗' if ratio > 1 else '✓':<1}".rjust(15))
+                cells.append(
+                    f"{need/1024:.0f}K {'✗' if ratio > 1 else '✓':<1}".rjust(15))
         print(f"{tag:<10}" + "".join(cells))
     print(f"{'='*100}")
     print("说明：✓ 装得下 = bishengir 未报 ub overflow；✗ = 超限。")
@@ -136,12 +144,12 @@ def _run_bishengir(mlirbc: str, extra_flags: list[str]) -> str:
     out = tempfile.mktemp(prefix="ir_", dir=os.path.join(_ROOT, ".scratch"))
     # 必须和服务器真实编译的命令行一致（否则 UB 估计差一个数量级）：
     # 服务器实测命令行含 --enable-optimized-metaop=false 与 --enable-auto-blockify-loop
-    cmd = [bc, mlirbc, "--target=Ascend910B3",
-           "--enable-auto-multi-buffer=True", "--enable-auto-bind-sub-block=True",
-           "--enable-optimized-metaop=false", "--enable-auto-blockify-loop",
-           "--enable-hfusion-compile=true", "--enable-hivm-compile=true",
-           "--enable-triton-kernel-compile=true",
-           "-o", out] + list(extra_flags)
+    cmd = [
+        bc, mlirbc, "--target=Ascend910B3", "--enable-auto-multi-buffer=True",
+        "--enable-auto-bind-sub-block=True", "--enable-optimized-metaop=false",
+        "--enable-auto-blockify-loop", "--enable-hfusion-compile=true",
+        "--enable-hivm-compile=true", "--enable-triton-kernel-compile=true", "-o", out
+    ] + list(extra_flags)
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     for f in glob.glob(out + "*"):
         try:

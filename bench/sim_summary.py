@@ -41,7 +41,7 @@ def find_sim_root(root):
 
 
 def summarize_instr(files):
-    agg = collections.defaultdict(lambda: [0, 0])   # instr -> [calls, cycles]
+    agg = collections.defaultdict(lambda: [0, 0])  # instr -> [calls, cycles]
     per_core = {}
     for f in files:
         tot = 0
@@ -64,8 +64,12 @@ def summarize_instr(files):
 
     sync = sum(cy for n, (_, cy) in agg.items() if n in SYNC_INSTRS)
     comp = sum(cy for n, (_, cy) in agg.items() if n not in SYNC_INSTRS)
-    print(f"\n  同步类(BAR/WAIT_FLAG/SET_FLAG/MOV_SRC_TO_DST_ALIGN) = {sync:>9,}  {sync / total * 100:>5.1f}%")
-    print(f"  其余（计算+取数+流控）                              = {comp:>9,}  {comp / total * 100:>5.1f}%")
+    print(
+        f"\n  同步类(BAR/WAIT_FLAG/SET_FLAG/MOV_SRC_TO_DST_ALIGN) = {sync:>9,}  {sync / total * 100:>5.1f}%"
+    )
+    print(
+        f"  其余（计算+取数+流控）                              = {comp:>9,}  {comp / total * 100:>5.1f}%"
+    )
 
     for name in ("BAR", "WAIT_FLAG", "SET_FLAG", "MOV_SRC_TO_DST_ALIGN"):
         if name in agg:
@@ -74,7 +78,9 @@ def summarize_instr(files):
                   f"  ({cy / c / 1.8e3:>5.3f} µs @1.8GHz)")
     vals = sorted(per_core.values())
     if vals:
-        print(f"\n  每核 cycles: min={vals[0]:,} 中位={vals[len(vals) // 2]:,} max={vals[-1]:,}")
+        print(
+            f"\n  每核 cycles: min={vals[0]:,} 中位={vals[len(vals) // 2]:,} max={vals[-1]:,}"
+        )
     return agg, total
 
 
@@ -85,11 +91,14 @@ def summarize_trace(files):
     busy = collections.defaultdict(float)
     cnt = collections.defaultdict(int)
     span_sum = 0.0
-    covered_sum = 0.0        # 至少有一个 pipe 在忙的时间（区间并集）
+    covered_sum = 0.0  # 至少有一个 pipe 在忙的时间（区间并集）
     for f in files:
         with open(f) as fh:
             ev = json.load(fh).get("traceEvents", [])
-        pids = {e["args"]["name"]: e["pid"] for e in ev if e.get("name") == "process_name"}
+        pids = {
+            e["args"]["name"]: e["pid"]
+            for e in ev if e.get("name") == "process_name"
+        }
         inv = {v: k for k, v in pids.items()}
         xs = [e for e in ev if e.get("ph") == "X"]
         if not xs:
@@ -106,7 +115,8 @@ def summarize_trace(files):
             cnt[inv.get(e["pid"], e["pid"])] += 1
 
         # 区间并集 = 真正"有 pipe 在忙"的时长，剩下的才是纯空转
-        ivs = sorted((e["ts"] * scale, (e["ts"] + (e.get("dur") or 0)) * scale) for e in xs)
+        ivs = sorted(
+            (e["ts"] * scale, (e["ts"] + (e.get("dur") or 0)) * scale) for e in xs)
         cov, cur_s, cur_e = 0.0, None, None
         for s, e2 in ivs:
             if cur_s is None:
@@ -122,7 +132,9 @@ def summarize_trace(files):
 
     n = len(files)
     tot = sum(busy.values())
-    print(f"\n{'=' * 68}\n[pipe 时间线]  cores = {n}   平均 span = {span_sum / n:.3f} µs/核\n{'=' * 68}")
+    print(
+        f"\n{'=' * 68}\n[pipe 时间线]  cores = {n}   平均 span = {span_sum / n:.3f} µs/核\n{'=' * 68}"
+    )
     print(f"{'pipe':<14}{'events':>8}{'busy(µs)':>11}{'占 span':>9}")
     for k, v in sorted(busy.items(), key=lambda kv: -kv[1]):
         print(f"{k:<14}{cnt[k]:>8}{v:>11.3f}{v / span_sum * 100:>8.1f}%")

@@ -63,9 +63,8 @@ def test_shape(N_q, N_k, d):
 
     # 4. Test Backward (Isolated with Golden O, L)
     t0 = time.time()
-    dq_iso, dk_iso, dv_iso = flash_attention_npu.backward(
-        do_npu, q_npu, k_npu, v_npu, o_ref_npu, l_ref_npu, scale
-    )
+    dq_iso, dk_iso, dv_iso = flash_attention_npu.backward(do_npu, q_npu, k_npu, v_npu,
+                                                          o_ref_npu, l_ref_npu, scale)
     torch.npu.synchronize()
     t_bwd_iso = (time.time() - t0) * 1000
 
@@ -86,9 +85,8 @@ def test_shape(N_q, N_k, d):
 
     # 5. Test Backward (Chained with Custom O, L)
     t0 = time.time()
-    dq_c, dk_c, dv_c = flash_attention_npu.backward(
-        do_npu, q_npu, k_npu, v_npu, o_c, l_c, scale
-    )
+    dq_c, dk_c, dv_c = flash_attention_npu.backward(do_npu, q_npu, k_npu, v_npu, o_c,
+                                                    l_c, scale)
     torch.npu.synchronize()
     t_bwd_c = (time.time() - t0) * 1000
 
@@ -116,11 +114,8 @@ def test_shape(N_q, N_k, d):
 
     # Verdict
     fwd_pass = diff_o.max().item() < 0.02 and diff_l.max().item() < 0.02
-    bwd_pass = (
-        diff_dq_iso.max().item() < 0.02
-        and diff_dk_iso.max().item() < 0.02
-        and diff_dv_iso.max().item() < 0.02
-    )
+    bwd_pass = (diff_dq_iso.max().item() < 0.02 and diff_dk_iso.max().item() < 0.02
+                and diff_dv_iso.max().item() < 0.02)
     print(
         f"\n>>> Verdict: FWD {'PASS' if fwd_pass else 'FAIL'}, BWD {'PASS' if bwd_pass else 'FAIL'}"
     )
@@ -181,9 +176,8 @@ def test_shape_multihead(heads, N_q, N_k, d):
 
     # 4. Test Native Multi-Head Backward
     t0 = time.time()
-    dq_c, dk_c, dv_c = flash_attention_npu.backward(
-        do_npu, q_npu, k_npu, v_npu, o_c, l_c, scale
-    )
+    dq_c, dk_c, dv_c = flash_attention_npu.backward(do_npu, q_npu, k_npu, v_npu, o_c,
+                                                    l_c, scale)
     torch.npu.synchronize()
     t_bwd = (time.time() - t0) * 1000
 
@@ -203,11 +197,8 @@ def test_shape_multihead(heads, N_q, N_k, d):
     )
 
     fwd_pass = diff_o.max().item() < 0.02 and diff_l.max().item() < 0.02
-    bwd_pass = (
-        diff_dq.max().item() < 0.02
-        and diff_dk.max().item() < 0.02
-        and diff_dv.max().item() < 0.02
-    )
+    bwd_pass = (diff_dq.max().item() < 0.02 and diff_dk.max().item() < 0.02
+                and diff_dv.max().item() < 0.02)
     print(
         f"\n>>> Verdict: FWD {'PASS' if fwd_pass else 'FAIL'}, BWD {'PASS' if bwd_pass else 'FAIL'}"
     )

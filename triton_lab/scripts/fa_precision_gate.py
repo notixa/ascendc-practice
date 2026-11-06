@@ -35,8 +35,7 @@ DTYPE_MAP = {
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="FlashAttention forward precision gate"
-    )
+        description="FlashAttention forward precision gate")
     parser.add_argument("--device", type=int, default=0, help="NPU device id（默认 0）")
     parser.add_argument(
         "--dtype",
@@ -134,9 +133,8 @@ def _max_rel(diff, ref, eps: float = 1e-6) -> float:
     return float(rel.max().item())
 
 
-def run_case(
-    torch, fla_fwd, args, sq: int, sk: int, hd: int, causal: bool, dtype_name: str
-) -> bool:
+def run_case(torch, fla_fwd, args, sq: int, sk: int, hd: int, causal: bool,
+             dtype_name: str) -> bool:
     dtype = getattr(torch, DTYPE_MAP[dtype_name])
     device = torch.device(f"npu:{args.device}")
 
@@ -148,7 +146,7 @@ def run_case(
     k = torch.randn(shape_k, generator=gen).to(device=device, dtype=dtype).contiguous()
     v = torch.randn(shape_k, generator=gen).to(device=device, dtype=dtype).contiguous()
 
-    scale = float(hd) ** -0.5
+    scale = float(hd)**-0.5
 
     o_k = fla_fwd(q, k, v, causal=causal)
     torch.npu.synchronize()
@@ -164,11 +162,9 @@ def run_case(
     ok_o = finite_o and torch.allclose(o_kf, o_ref, atol=args.atol, rtol=args.rtol)
 
     status = "PASS" if ok_o else "FAIL"
-    print(
-        f"[{status}] dtype={dtype_name:4s} causal={int(causal)} "
-        f"Sq={sq:4d} Sk={sk:4d} D={hd:3d} B={args.batch} H={args.heads} "
-        f"max|dO|={max_abs:.3e} maxRel={max_rel:.3e}"
-    )
+    print(f"[{status}] dtype={dtype_name:4s} causal={int(causal)} "
+          f"Sq={sq:4d} Sk={sk:4d} D={hd:3d} B={args.batch} H={args.heads} "
+          f"max|dO|={max_abs:.3e} maxRel={max_rel:.3e}")
     if not finite_o:
         print("       !! O 含 NaN/Inf")
     if not ok_o:
@@ -194,9 +190,7 @@ def main(argv: list[str] | None = None) -> int:
 
     torch.npu.set_device(args.device)
     if args.device != 0:
-        print(
-            "[WARN] fla_fwd 内部固定读取 device 0 的核数，--device != 0 时 grid 可能不准"
-        )
+        print("[WARN] fla_fwd 内部固定读取 device 0 的核数，--device != 0 时 grid 可能不准")
     sys.path.insert(0, str(REPO_ROOT))
     from kernels.flash_attention.fa_fwd import fla_fwd
 
@@ -206,10 +200,8 @@ def main(argv: list[str] | None = None) -> int:
     failed = 0
     errored = 0
 
-    print(
-        f"device=npu:{args.device} cases={total} "
-        f"atol={args.atol} rtol={args.rtol}"
-    )
+    print(f"device=npu:{args.device} cases={total} "
+          f"atol={args.atol} rtol={args.rtol}")
     print("首次调用会触发 autotune（每个 key 若干组配置），耗时会明显高于后续 case")
     print("-" * 100)
 

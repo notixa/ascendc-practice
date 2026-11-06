@@ -37,6 +37,6 @@ def test_vector_add_on_npu():
     y = torch.rand(n, dtype=torch.float32, device="npu")
     out = torch.empty_like(x)
     BLOCK = 1024
-    _add_kernel[(triton.cdiv(n, BLOCK),)](x, y, out, n, BLOCK_SIZE=BLOCK)
+    _add_kernel[(triton.cdiv(n, BLOCK), )](x, y, out, n, BLOCK_SIZE=BLOCK)
     torch.npu.synchronize()
     assert torch.allclose(out, x + y, atol=1e-5, rtol=1e-5)

@@ -12,34 +12,49 @@ from typing import Any, List, Optional
 
 import triton.language as tl
 
-class bl_dtype(tl.dtype): ...
-class buffer_type(tl.dtype): ...
+
+class bl_dtype(tl.dtype):
+    ...
+
+
+class buffer_type(tl.dtype):
+    ...
+
 
 class address_space:
     """Buffer 的地址空间。具体实例由 accelerate address space group 提供。"""
-    def to_ir(self, builder: Any) -> Any: ...
+
+    def to_ir(self, builder: Any) -> Any:
+        ...
+
 
 class buffer:
     """一块本地内存区域（UB / L1 / L0A / L0B / L0C 之一）。"""
-    def __init__(
-        self,
-        element_ty: tl.dtype,
-        shape: List[Any],
-        space: Optional[address_space] = ...,
-        strides: Optional[List[Any]] = ...,
-    ) -> None: ...
-    def to_ir(self, builder: Any) -> Any: ...
 
-def builtin(fn: Any) -> Any: ...
-def is_builtin(fn: Any) -> bool: ...
+    def __init__(self,
+                 element_ty: tl.dtype,
+                 shape: List[Any],
+                 space: Optional[address_space] = ...,
+                 strides: Optional[List[Any]] = ...) -> None:
+        ...
 
-def alloc(
-    etype: tl.dtype,
-    shape: List[tl.constexpr],
-    _address_space: Optional[address_space] = ...,
-    is_mem_unique: bool = False,
-    _semantic: Any = ...,
-) -> buffer:
+    def to_ir(self, builder: Any) -> Any:
+        ...
+
+
+def builtin(fn: Any) -> Any:
+    ...
+
+
+def is_builtin(fn: Any) -> bool:
+    ...
+
+
+def alloc(etype: tl.dtype,
+          shape: List[tl.constexpr],
+          _address_space: Optional[address_space] = ...,
+          is_mem_unique: bool = False,
+          _semantic: Any = ...) -> buffer:
     """在本地内存里分配一块区域。
 
     :param etype: 元素类型
@@ -50,26 +65,25 @@ def alloc(
     """
     ...
 
-def to_buffer(
-    tensor: tl.tensor,
-    space: Optional[address_space] = ...,
-    bind_buffer: Optional[buffer] = ...,
-    _semantic: Any = ...,
-) -> buffer: ...
 
-def to_tensor(
-    memref: buffer,
-    writable: bool = True,
-    target_shape: Any = ...,
-    _semantic: Any = ...,
-) -> tl.tensor: ...
+def to_buffer(tensor: tl.tensor,
+              space: Optional[address_space] = ...,
+              bind_buffer: Optional[buffer] = ...,
+              _semantic: Any = ...) -> buffer:
+    ...
 
-def subview(
-    src: buffer,
-    offsets: List[tl.constexpr],
-    sizes: List[tl.constexpr],
-    strides: List[tl.constexpr],
-    _semantic: Any = ...,
-) -> buffer:
+
+def to_tensor(memref: buffer,
+              writable: bool = True,
+              target_shape: Any = ...,
+              _semantic: Any = ...) -> tl.tensor:
+    ...
+
+
+def subview(src: buffer,
+            offsets: List[tl.constexpr],
+            sizes: List[tl.constexpr],
+            strides: List[tl.constexpr],
+            _semantic: Any = ...) -> buffer:
     """从源 buffer 切一个子视图（做多槽/分片用）。"""
     ...

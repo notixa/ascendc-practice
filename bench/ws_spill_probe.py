@@ -28,26 +28,25 @@ D = 128
 BQ = 64
 BK = 256
 STACK = 4
-SW = BK * STACK          # 1024 列 / 轮
-
+SW = BK * STACK  # 1024 列 / 轮
 
 
 def run_child(tag, which, bk):
-    import torch          # noqa: PLC0415
-    import torch_npu      # noqa: E402,F401
+    import torch  # noqa: PLC0415
+    import torch_npu  # noqa: E402,F401
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from _ws_spill_kernels import k_hold, k_spill          # noqa: PLC0415
+    from _ws_spill_kernels import k_hold, k_spill  # noqa: PLC0415
     kern = k_hold if which == "k_hold" else k_spill
     q = torch.randn(BQ * D, dtype=torch.float16, device="npu")
     k = torch.randn(4096 * D, dtype=torch.float16, device="npu")
     o = torch.zeros(BQ, dtype=torch.float32, device="npu")
     ws = torch.zeros(20 * 4 * BQ * 512, dtype=torch.float32, device="npu")
     try:
-        kern[(20,)](q, k, ws, o, 4096, BLOCK_Q=BQ, BK=bk, DIM=D)
+        kern[(20, )](q, k, ws, o, 4096, BLOCK_Q=BQ, BK=bk, DIM=D)
         torch.npu.synchronize()
         print(f"RESULT {tag} OK 0")
-    except Exception as exc:                                # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         msg = str(exc)
         m = re.search(r"requires (\d+) bits", msg)
         if m:
@@ -76,13 +75,16 @@ def main():
 
     print("\n  k_hold 参照（不落盘，4 份 s 同时活）：")
     for bk in (256, 512):
-        print(f"{bk:>5}{bk * 4:>9}{BQ * bk * 4 / 1024:>8.0f}K{BQ * bk * 4 / 1024:>7.0f}K   {_probe('hold', 'k_hold', bk):<28}")
+        print(
+            f"{bk:>5}{bk * 4:>9}{BQ * bk * 4 / 1024:>8.0f}K{BQ * bk * 4 / 1024:>7.0f}K   {_probe('hold', 'k_hold', bk):<28}"
+        )
 
 
 def _probe(tag, which, bk):
     cmd = [sys.executable, os.path.abspath(__file__), "--one", tag, which, str(bk)]
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=1800).stdout
-    res = next((ln for ln in out.splitlines() if ln.startswith("RESULT")), "RESULT ? ? 0")
+    res = next((ln for ln in out.splitlines() if ln.startswith("RESULT")),
+               "RESULT ? ? 0")
     msg = next((ln for ln in out.splitlines() if ln.startswith("MSG")), "")
     p = res.split()
     if p[2] == "OK":

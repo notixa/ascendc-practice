@@ -32,6 +32,7 @@ ReplayCodeGenParams = collections.namedtuple(
 
 
 class ReplayCodeGen:
+
     def __init__(self, replayCodeGenParams):
         self.op_type = replayCodeGenParams.op_type
         self.impl = replayCodeGenParams.impl
@@ -69,9 +70,8 @@ class ReplayCodeGen:
         self._gen_replay_code(replayimpl, reptmp, ops_product)
 
     def _gen_tiling_data_header(self):
-        self.tiling_data_file = os.path.join(
-            self.outdir, self.kernel + "_tiling_data.h"
-        )
+        self.tiling_data_file = os.path.join(self.outdir,
+                                             self.kernel + "_tiling_data.h")
         gen_tiling(self.tiling_file, self.tiling_data_file)
 
     def _gen_kimpl_code(self, src, tmpfile):
@@ -102,8 +102,7 @@ class ReplayCodeGen:
                     self.outdir,
                     ops_product,
                     None,
-                )
-            )
+                ))
             if code_channel == code_channel_infer.CODE_VEC:
                 core_type_infer = "0"
             elif code_channel == code_channel_infer.CODE_CUBE:

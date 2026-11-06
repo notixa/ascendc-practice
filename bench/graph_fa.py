@@ -59,8 +59,9 @@ class GraphedFA:
         try:
             with torch.npu.graph(self.g):
                 self._out = call(self.q, self.k, self.v, causal)
-        except Exception as e:                       # noqa: BLE001
-            print(f"[capture 失败{(' ' + label) if label else ''}] {type(e).__name__}: {e}")
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[capture 失败{(' ' + label) if label else ''}] {type(e).__name__}: {e}")
             print("  → 若是 OpCommand 与图捕获冲突，用 -DFAT_NO_OPCOMMAND=ON 重新构建 .so")
             print("  → 或改用显式 capture_begin/capture_end（见文件末尾注释）")
             raise
@@ -95,9 +96,14 @@ class GraphedFLA(GraphedFA):
             sys.path.insert(0, tl)
         from kernels.flash_attention.fa_fwd import fla_fwd  # noqa: PLC0415
 
-        super().__init__(B, N, H, D,
+        super().__init__(B,
+                         N,
+                         H,
+                         D,
                          call=lambda q, k, v, c: fla_fwd(q, k, v, causal=c),
-                         causal=causal, warmup=warmup, label="triton")
+                         causal=causal,
+                         warmup=warmup,
+                         label="triton")
 
 
 def bench(fn, warmup=10, iters=50, repeats=5):
@@ -126,7 +132,8 @@ def golden(q, k, v, causal):
     s = torch.einsum("bqhd,bkhd->bhqk", q.float(), k.float()) / math.sqrt(q.size(-1))
     if causal:
         n = q.size(1)
-        m = torch.triu(torch.ones((n, n), dtype=torch.bool, device=s.device), diagonal=1)
+        m = torch.triu(torch.ones((n, n), dtype=torch.bool, device=s.device),
+                       diagonal=1)
         s = s.masked_fill(m, float("-inf"))
     return torch.einsum("bhqk,bkhd->bqhd", torch.softmax(s, -1), v.float())
 
@@ -150,7 +157,9 @@ def main():
             # 正确性：replay 后用静态 buffer 里的输入算 golden
             gf(q, k, v)
             torch.npu.synchronize()
-            err = (gf.o.cpu().float() - golden(gf.q.cpu(), gf.k.cpu(), gf.v.cpu(), causal)).abs().max().item()
+            err = (
+                gf.o.cpu().float() -
+                golden(gf.q.cpu(), gf.k.cpu(), gf.v.cpu(), causal)).abs().max().item()
             ok = "OK " if err < 2e-2 else "FAIL"
             print(f"  [{tag}] {ok} graphed max_err={err:.5f}")
 
@@ -163,17 +172,19 @@ def main():
             t_call, lo2, hi2 = bench(lambda: gf(q, k, v))
             t_replay, lo3, hi3 = bench(lambda: gf.replay_only())
 
-            print(f"  [{tag}]   原始 fla_fwd        {t_base:7.3f} ms  [{lo:.3f}, {hi:.3f}]")
-            print(f"  [{tag}]   图 + 输入拷贝        {t_call:7.3f} ms  [{lo2:.3f}, {hi2:.3f}]"
-                  f"   speedup {t_base / t_call:5.2f}x")
-            print(f"  [{tag}]   图 (纯 replay)      {t_replay:7.3f} ms  [{lo3:.3f}, {hi3:.3f}]"
-                  f"   speedup {t_base / t_replay:5.2f}x")
+            print(
+                f"  [{tag}]   原始 fla_fwd        {t_base:7.3f} ms  [{lo:.3f}, {hi:.3f}]")
+            print(
+                f"  [{tag}]   图 + 输入拷贝        {t_call:7.3f} ms  [{lo2:.3f}, {hi2:.3f}]"
+                f"   speedup {t_base / t_call:5.2f}x")
+            print(
+                f"  [{tag}]   图 (纯 replay)      {t_replay:7.3f} ms  [{lo3:.3f}, {hi3:.3f}]"
+                f"   speedup {t_base / t_replay:5.2f}x")
         print()
 
 
 if __name__ == "__main__":
     main()
-
 
 # ---------------------------------------------------------------------------
 # 如果 `with torch.npu.graph(g)` 这个上下文管理器在你的版本上不可用，

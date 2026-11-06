@@ -45,8 +45,7 @@ dv_golden = v_ref.grad.half()
 
 # 3. Custom Backward using custom o & l
 dq_custom, dk_custom, dv_custom = flash_attention_npu.backward(
-    do, q, k, v, o_custom, l_custom
-)
+    do, q, k, v, o_custom, l_custom)
 torch.npu.synchronize()
 
 print("--- Comparison with Custom O, L ---")
@@ -62,9 +61,8 @@ print(f"Max diff dV: {diff_dv.max().item():.5f}, mean: {diff_dv.mean().item():.5
 o_golden_npu = o_ref.half().to("npu:0")
 l_golden_npu = l_ref.half().to("npu:0")
 
-dq_c2, dk_c2, dv_c2 = flash_attention_npu.backward(
-    do, q, k, v, o_golden_npu, l_golden_npu
-)
+dq_c2, dk_c2, dv_c2 = flash_attention_npu.backward(do, q, k, v, o_golden_npu,
+                                                   l_golden_npu)
 torch.npu.synchronize()
 
 print("\n--- Comparison with Golden O, L (Isolated Backward) ---")
