@@ -121,12 +121,14 @@ def check_output(torch, run_kernel, q, k, v, atol: float, rtol: float) -> tuple[
     ref = eager_attention(torch, q, k, v)
     torch.npu.synchronize()
 
+    # NPU 的 aclnnIsClose 要求两边 dtype 一致；统一在 fp32 上比较。
     out_f = out.float()
+    ref_f = ref.float()
     finite = bool(torch.isfinite(out_f).all().item())
-    max_abs = float((out_f - ref).abs().max().item())
-    ok = finite and torch.allclose(out_f, ref, atol=atol, rtol=rtol)
+    max_abs = float((out_f - ref_f).abs().max().item())
+    ok = finite and torch.allclose(out_f, ref_f, atol=atol, rtol=rtol)
 
-    del out, ref, out_f
+    del out, ref, out_f, ref_f
     return ok, max_abs
 
 
