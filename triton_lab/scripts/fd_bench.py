@@ -82,6 +82,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=128,
         help="内层 KV tile（默认 128；必须是 2 的幂）",
     )
+    parser.add_argument(
+        "--reuse-workspace",
+        action="store_true",
+        help="复用 mid_o/mid_lse/out，排除每次调用的分配开销",
+    )
+    parser.add_argument(
+        "--graph",
+        action="store_true",
+        help="用 torch.npu.NPUGraph 捕获 flash_decoding（自动复用 workspace），"
+        "测 graph replay 延迟",
+    )
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=20)
     parser.add_argument("--trials", type=int, default=5)
@@ -197,14 +208,71 @@ def run_case(
     k = torch.randn((batch, heads_kv, seq, dim), generator=gen).to(device=device, dtype=dtype).contiguous()
     v = torch.randn((batch, heads_kv, seq, dim), generator=gen).to(device=device, dtype=dtype).contiguous()
 
-    def run_kernel():
-        return flash_decoding(
-            q,
-            k,
-            v,
-            split_s=args.split_s,
-            block_s=args.block_s,
+    workspace = None
+    if args.reuse_workspace or args.graph:
+        num_splits = (seq + args.split_s - 1) // args.split_s
+        workspace = (
+            torch.empty(
+                (batch, heads_kv, num_splits, group, dim),
+                dtype=torch.float16,
+                device=device,
+            ),
+            torch.empty(
+                (batch, heads_kv, num_splits, group),
+                dtype=torch.float32,
+                device=device,
+            ),
+            torch.empty(
+                (batch, heads_kv, group, dim),
+                dtype=torch.float16,
+                device=device,
+            ),
         )
+
+    if args.graph:
+        if workspace is None:
+            raise RuntimeError("--graph 需要 workspace")
+
+        # 捕获前先 warmup，确保 Triton 编译/device 属性查询都已完成；
+        # 捕获期间不能再有 torch.empty 之类的分配。
+        for _ in range(3):
+            flash_decoding(
+                q,
+                k,
+                v,
+                split_s=args.split_s,
+                block_s=args.block_s,
+                workspace=workspace,
+            )
+        torch.npu.synchronize()
+
+        graph = torch.npu.NPUGraph()
+        with torch.npu.graph(graph):
+            flash_decoding(
+                q,
+                k,
+                v,
+                split_s=args.split_s,
+                block_s=args.block_s,
+                workspace=workspace,
+            )
+        torch.npu.synchronize()
+
+        def run_kernel():
+            graph.replay()
+            return workspace[2]
+
+    else:
+
+        def run_kernel():
+            return flash_decoding(
+                q,
+                k,
+                v,
+                split_s=args.split_s,
+                block_s=args.block_s,
+                workspace=workspace,
+            )
 
     check_ok = True
     max_abs = float("nan")
@@ -275,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"device=npu:{args.device} dtype={args.dtype} preset={args.preset} "
         f"split_s={args.split_s} block_s={args.block_s} "
+        f"reuse_workspace={int(args.reuse_workspace)} graph={int(args.graph)} "
         f"warmup={args.warmup} iters={args.iters} trials={args.trials}"
     )
     print("-" * 150)

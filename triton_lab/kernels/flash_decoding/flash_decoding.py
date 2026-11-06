@@ -249,6 +249,7 @@ def flash_decoding(
     V: torch.Tensor,
     split_s: int = 512,
     block_s: int = 128,
+    workspace: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
 ):
     """Split-KV FlashDecoding。
 
@@ -261,6 +262,13 @@ def flash_decoding(
         通常更快。
     block_s:
         内层 KV tile 大小，必须是 2 的幂（64/128/256）。
+    workspace:
+        可选的 ``(mid_o, mid_lse, out)`` 复用缓冲区，用于 decode 场景避免
+        每次调用都分配。shape 必须与当前输入匹配，且 ``out`` 会被原地覆盖。
+        不传则内部 ``torch.empty``。
+        - mid_o:  (B, H_kv, NUM_SPLITS, G, D) fp16
+        - mid_lse:(B, H_kv, NUM_SPLITS, G)    fp32
+        - out:    (B, H_kv, G, D)             fp16
     """
     if block_s <= 0 or (block_s & (block_s - 1)) != 0:
         raise ValueError(f"block_s 必须是 2 的幂，收到 {block_s}")
@@ -302,21 +310,42 @@ def flash_decoding(
     grid_p1 = (min(task_num_p1, cube_cores),)
     grid_p2 = (min(task_num_p2, vector_cores),)
 
-    mid_o = torch.empty(
-        [batch_num, head_kv, NUM_SPLITS, group, dim],
-        dtype=torch.float16,
-        device=Q.device,
-    )
-
-    mid_lse = torch.empty(
-        [batch_num, head_kv, NUM_SPLITS, group],
-        dtype=torch.float32,
-        device=Q.device,
-    )
-
-    out = torch.empty(
-        [batch_num, head_kv, group, dim], dtype=torch.float16, device=Q.device
-    )
+    if workspace is None:
+        mid_o = torch.empty(
+            [batch_num, head_kv, NUM_SPLITS, group, dim],
+            dtype=torch.float16,
+            device=Q.device,
+        )
+        mid_lse = torch.empty(
+            [batch_num, head_kv, NUM_SPLITS, group],
+            dtype=torch.float32,
+            device=Q.device,
+        )
+        out = torch.empty(
+            [batch_num, head_kv, group, dim], dtype=torch.float16, device=Q.device
+        )
+    else:
+        mid_o, mid_lse, out = workspace
+        expected_mid_o = (batch_num, head_kv, NUM_SPLITS, group, dim)
+        expected_mid_lse = (batch_num, head_kv, NUM_SPLITS, group)
+        expected_out = (batch_num, head_kv, group, dim)
+        if tuple(mid_o.shape) != expected_mid_o or mid_o.dtype != torch.float16:
+            raise ValueError(
+                f"workspace.mid_o 必须是 fp16 {expected_mid_o}，收到 "
+                f"{tuple(mid_o.shape)} {mid_o.dtype}"
+            )
+        if tuple(mid_lse.shape) != expected_mid_lse or mid_lse.dtype != torch.float32:
+            raise ValueError(
+                f"workspace.mid_lse 必须是 fp32 {expected_mid_lse}，收到 "
+                f"{tuple(mid_lse.shape)} {mid_lse.dtype}"
+            )
+        if tuple(out.shape) != expected_out or out.dtype != torch.float16:
+            raise ValueError(
+                f"workspace.out 必须是 fp16 {expected_out}，收到 "
+                f"{tuple(out.shape)} {out.dtype}"
+            )
+        if mid_o.device != Q.device or mid_lse.device != Q.device or out.device != Q.device:
+            raise ValueError("workspace 必须和 Q 在同一个 device 上")
 
     flash_decoding_s1_kernel[grid_p1](
         Q,
