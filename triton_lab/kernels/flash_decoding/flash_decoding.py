@@ -7,6 +7,16 @@ import triton.language as tl
 import triton.language.extra.cann.extension as al
 from torch_npu.npu import get_device_properties
 
+_DEVICE_PROPS = None
+
+
+def _get_core_counts():
+    """缓存 device properties：每次调用都查驱动会带来可观的 host 开销。"""
+    global _DEVICE_PROPS
+    if _DEVICE_PROPS is None:
+        _DEVICE_PROPS = get_device_properties(0)
+    return _DEVICE_PROPS.cube_core_num, _DEVICE_PROPS.vector_core_num
+
 
 @triton.jit
 def flash_decoding_s1_kernel(
@@ -286,8 +296,7 @@ def flash_decoding(
     BLOCK_M = max(16, triton.next_power_of_2(group))
     BLOCK_G = triton.next_power_of_2(group)
 
-    cube_cores = get_device_properties(0).cube_core_num
-    vector_cores = get_device_properties(0).vector_core_num
+    cube_cores, vector_cores = _get_core_counts()
     task_num_p1 = batch_num * head_kv * NUM_SPLITS
     task_num_p2 = batch_num * head_kv
     grid_p1 = (min(task_num_p1, cube_cores),)
